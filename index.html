@@ -115,6 +115,79 @@
       color: #5a9aa8;
       font-size: 12px;
     }
+
+    /* ── 印刷 / PDF 出力用 ──
+       ブラウザの「印刷 → PDFに保存」で配布する用。
+       リンクは <a href> のまま残るのでPDF上でもクリックできる。 */
+    @media print {
+      @page {
+        size: A4 portrait;
+        margin: 10mm;
+      }
+
+      /* 背景色・背景画像を印刷でも落とさない */
+      * {
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+      }
+
+      body {
+        min-height: auto;
+        padding: 0;
+        background-size: 24px 24px;
+      }
+
+      .container { max-width: 100%; }
+
+      .header {
+        margin-bottom: 12px;
+        box-shadow: none;
+        break-inside: avoid;
+      }
+
+      /* 紙幅では3列が読みやすい */
+      .grid {
+        grid-template-columns: repeat(3, 1fr);
+        gap: 8px;
+      }
+
+      /* カードがページ境界で分断されないように */
+      .card {
+        break-inside: avoid;
+        page-break-inside: avoid;
+        box-shadow: none;
+        border: 1px solid #cfe1e6;
+        transform: none;
+      }
+
+      .card-name { padding: 5px 6px; }
+      .card-name span { font-size: 10pt; }
+      .card-laptop { padding: 6px 12px 5px; }
+      .card-desc {
+        padding: 5px 7px 4px;
+        font-size: 7.5pt;
+        line-height: 1.45;
+      }
+
+      /* 画面では不要だが、紙・PDFでは URL を本文にも出す
+         （PDFのリンクが使えない環境でも打ち込めるように） */
+      .card::after {
+        content: attr(href);
+        display: block;
+        padding: 0 7px 6px;
+        font-size: 6pt;
+        line-height: 1.3;
+        color: #3d8f9c;
+        text-align: center;
+        word-break: break-all;
+      }
+
+      .footer {
+        margin-top: 12px;
+        font-size: 8pt;
+        break-inside: avoid;
+      }
+    }
   </style>
 </head>
 <body>
