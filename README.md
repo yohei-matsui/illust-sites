@@ -2,7 +2,7 @@
 
 動画編集者向けイラストサイト20選(`index.html`)と、**自前ホストのオープンウェイトモデルによる AI イラスト生成・編集ページ**(`generate.html`)。
 
-- テキストから生成: FLUX.1-schnell
+- テキストから生成: Z-Image-Turbo(Apache-2.0、6B、8 ステップ)
 - 参照画像で編集(顔の入れ替え、人物の差し替えなど): Qwen-Image-Edit-2509(最大 3 枚の参照画像)
 
 生成ルールは外部サービスの規約に縛られず、`policy/policy.js` で自分で決めます。
@@ -19,7 +19,7 @@ Vercel 関数 (api/, lib/, policy/)   ← ルール判定はここ。API キー�
    │  Bearer WORKER_TOKEN
    ▼
 Modal GPU ワーカー (worker/modal_app.py)   ← diffusers で実行。モデレーションなし
-   ├ Generator (L40S): FLUX.1-schnell         テキスト→画像
+   ├ Generator (L40S): Z-Image-Turbo           テキスト→画像
    └ Editor    (H100): Qwen-Image-Edit-2509   参照画像つき編集
 ```
 
@@ -93,7 +93,8 @@ Modal の Secret `illust-gen` に `MODEL_ID`(生成)/ `EDIT_MODEL_ID`(編集)を
 
 | モデル | ライセンス | メモ |
 |---|---|---|
-| `black-forest-labs/FLUX.1-schnell`(既定) | Apache-2.0 | 4 ステップで高速。HF トークン不要 |
+| `Tongyi-MAI/Z-Image-Turbo`(生成の既定) | Apache-2.0 | 8 ステップで高速。HF トークン不要 |
+| `black-forest-labs/FLUX.1-schnell` | Apache-2.0 | HF 上で gated 化されたため、ライセンス同意と `HF_TOKEN` が必要 |
 | `black-forest-labs/FLUX.1-dev` | 非商用ライセンス | 品質が高い。販売しない用途なら可。HF でライセンス同意し `HF_TOKEN` も Secret に追加 |
 | `Qwen/Qwen-Image-Edit-2509`(編集の既定) | Apache-2.0 | 複数参照画像に対応。H100 必要 |
 | `black-forest-labs/FLUX.1-Kontext-dev` | 非商用ライセンス | 単一画像の編集向き。2 枚参照は苦手 |

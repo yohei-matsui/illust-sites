@@ -17,7 +17,8 @@ Vercel の WORKER_URL に、WORKER_TOKEN を同じ値で設定してください
 別コンテナ(H100)が動きます。テキスト生成と編集はそれぞれ独立してゼロスケールします。
 
 モデル切り替え(MODEL_ID を Secret に入れるだけ):
-    black-forest-labs/FLUX.1-schnell  (既定。Apache-2.0、4ステップで高速、HF_TOKEN 不要)
+    Tongyi-MAI/Z-Image-Turbo          (既定。Apache-2.0、8ステップで高速、HF_TOKEN 不要)
+    black-forest-labs/FLUX.1-schnell  (Apache-2.0 だが HF 上で gated 化。ライセンス同意 + HF_TOKEN 必要)
     black-forest-labs/FLUX.1-dev      (高品質。非商用ライセンス。HF でライセンス同意 + HF_TOKEN 必要)
     diffusers 形式で配布されている他のモデルも同様に指定できます。
 """
@@ -31,9 +32,9 @@ import modal
 
 APP_NAME = "illust-gen"
 CACHE_DIR = "/cache"
-DEFAULT_MODEL = "black-forest-labs/FLUX.1-schnell"
+DEFAULT_MODEL = "Tongyi-MAI/Z-Image-Turbo"
 DEFAULT_EDIT_MODEL = "Qwen/Qwen-Image-Edit-2509"
-GPU = os.environ.get("MODAL_GPU", "L40S")  # A100-40GB でも可。FLUX 系は bf16 で約 24GB 使います
+GPU = os.environ.get("MODAL_GPU", "L40S")  # Z-Image-Turbo は bf16 で約 16GB。FLUX 系は約 24GB
 EDIT_GPU = os.environ.get("MODAL_EDIT_GPU", "H100")  # Qwen-Image-Edit は bf16 で約 60GB 使うため 80GB クラスが必要
 MAX_IMAGE_BYTES = 6 * 1024 * 1024
 
@@ -61,8 +62,11 @@ secret = modal.Secret.from_name(APP_NAME)
 
 def model_defaults(model_id: str) -> dict:
     """モデルごとの既定ステップ数と guidance"""
-    if "schnell" in model_id.lower() or "turbo" in model_id.lower():
+    m = model_id.lower()
+    if "schnell" in m:
         return {"steps": 4, "guidance": 0.0}
+    if "turbo" in m:
+        return {"steps": 8, "guidance": 0.0}
     return {"steps": 28, "guidance": 3.5}
 
 
