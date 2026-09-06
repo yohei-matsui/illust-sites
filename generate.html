@@ -151,10 +151,8 @@
           <div class="hint">送信前にブラウザ側で長辺 1024px に縮小します。出力サイズは画像1の縦横比に合わせます。</div>
 
           <label for="editPrompt">編集の指示</label>
-          <textarea id="editPrompt">Replace the head (from the neck up) of the woman in image 1 with the woman in image 2.
-Keep image 1 unchanged: pose, body position, shoulders, framing, scale.
-Use image 2 for identity, facial expression and gaze. Face turned toward the camera.</textarea>
-          <div class="hint">短い英語、肯定形が安定します。「絶対に」「一切」などの強調は効果がありません。</div>
+          <textarea id="editPrompt">Change the woman's face and hair in the first image to the woman from the second image. Keep her pose, clothes and the background exactly the same. She should have the expression and gaze of the second image, looking at the camera.</textarea>
+          <div class="hint">平易な英語で「何を、何に変えて、何を保つか」を書くのが最も安定します。「image 1」より「the first image」、「head」より「face and hair」のような日常的な言い方が通ります。服や背景など保ちたい要素は具体名で書くと効きます。「絶対に」「一切」などの強調は効果がありません。</div>
 
           <label for="negativePrompt">ネガティブプロンプト(任意)</label>
           <input id="negativePrompt" placeholder="例: blurry, extra fingers, different person">
