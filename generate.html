@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>AI イラスト生成</title>
+  <title>AI 画像生成</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -105,7 +105,7 @@
 <body>
   <div class="container">
     <div class="topbar">
-      <h1>AI イラスト生成</h1>
+      <h1>AI 画像生成</h1>
       <a href="index.html">← イラストサイト20選に戻る</a>
     </div>
 
@@ -118,8 +118,8 @@
 
         <div id="pane-generate">
           <label for="prompt">プロンプト</label>
-          <textarea id="prompt" placeholder="例: flat vector illustration of a video editor working on a laptop, pastel colors, white background"></textarea>
-          <div class="hint">英語のほうが安定しますが、日本語でも生成できます。</div>
+          <textarea id="prompt" placeholder="例: professional photo of a woman in a yellow raincoat on a bridge, overcast light / anime style illustration of a cat cafe / 3D render, pixar style, robot barista"></textarea>
+          <div class="hint">写真・イラスト・アニメ・3D など画風はプロンプトの冒頭で指定します(photo / illustration / anime style / 3D render ...)。英語のほうが安定しますが、日本語でも生成できます。</div>
 
           <label for="size">サイズ</label>
           <select id="size">
@@ -194,7 +194,7 @@ Use image 2 for identity, facial expression and gaze. Face turned toward the cam
 
       <div>
         <div class="panel result" id="result">
-          <div class="placeholder">左のフォームにプロンプトを入れて<br>「生成する」を押してください。<br>参照画像を使った編集はタブから切り替えられます。</div>
+          <div class="placeholder">左のフォームにプロンプトを入れて<br>「生成する」を押してください。<br>写真調・イラスト調どちらも生成できます。<br>参照画像を使った編集はタブから切り替えられます。</div>
         </div>
         <div class="history" id="history"></div>
       </div>
@@ -299,7 +299,7 @@ Use image 2 for identity, facial expression and gaze. Face turned toward the cam
         <img src="${url}" alt="生成画像">
         <div class="meta">seed ${item.seed} · ${item.width}×${item.height} · ${item.steps} steps · ${item.elapsed_sec}s · ${item.model}</div>
         <div class="actions">
-          <a href="${url}" download="illust-${item.seed}.png">PNG を保存</a>
+          <a href="${url}" download="image-${item.seed}.png">PNG を保存</a>
           <button type="button" id="reuseSeed">このシードを再利用</button>
           <button type="button" id="copyPrompt">プロンプトをコピー</button>
         </div>`;
