@@ -5,12 +5,12 @@ const cases = [
   ["a cute cat sitting on a laptop, flat illustration", true],
   ["動画編集者のためのシンプルな線画イラスト、青いパソコン", true],
   ["a beautiful woman on the beach", true],
-  ["nude woman", true], // custom sexual-explicit は "nude" 単体では弾かない設定
-  ["hentai style girl", false], // custom sexual-explicit
+  ["nude woman", true], // 成人の性的描写は制限なし
+  ["hentai style girl", true],
   ["小学生 全裸", false], // legal csam
   ["ｌｏｌｉ　ｎｕｄｅ", false], // 全角でも正規化して判定
   ["12 years old girl in bikini", false], // legal csam (年齢 regex + 水着)
-  ["gore zombie", true], // gore rule は無効
+  ["gore zombie", true],
   ["", false],
   ["x".repeat(1001), false],
 ];

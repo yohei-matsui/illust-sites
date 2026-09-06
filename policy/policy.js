@@ -23,6 +23,7 @@ const MINOR_TERMS = [
   "少女", "少年", "子供", "こども", "子ども", "児童", /\b1[0-7]\s*(years?|yo|歳|才)\b/i, /\b[1-9]\s*(years?|yo|歳|才)\b/i,
 ];
 
+// 未成年語との組み合わせ判定にのみ使用(単体では弾かない)
 const SEXUAL_TERMS = [
   "nude", "naked", "nsfw", "sex", "sexual", "porn", "hentai", "erotic", "explicit",
   "genital", "genitals", "penis", "vagina", "pussy", "nipple", "nipples", "breasts", "topless", "lingerie", "bikini",
@@ -42,33 +43,16 @@ export default {
   ],
 
   /* ---------- 自分で決めるルール(自由に編集) ---------- */
-  custom: [
-    {
-      id: "sexual-explicit",
-      label: "露骨な性的描写",
-      message: "このサイトでは露骨な性的描写は生成しない設定になっています。",
-      enabled: true, // false にすれば通ります(法律上の制限は legal 側で別途かかります)
-      any: [
-        "porn", "hentai", "sex", "genital", "genitals", "penis", "vagina", "pussy",
-        "性交", "セックス", "陰部", "R18", "R-18", "18禁",
-      ],
-    },
-    {
-      id: "gore",
-      label: "過度な暴力・ゴア",
-      message: "過度な暴力・流血表現は生成しない設定になっています。",
-      enabled: false,
-      any: ["gore", "dismember", "decapitat", "mutilat", "内臓", "斬首", "切断", "惨殺"],
-    },
-    {
-      id: "real-person",
-      label: "特定の実在人物",
-      message: "実在人物の生成は許可されていません。",
-      enabled: false,
-      // 弾きたい実名を追加してください。例: "山田太郎", "taro yamada"
-      any: [],
-    },
-  ],
+  // 既定では何も制限しません。必要になったら下の例のように追加してください。
+  // 例:
+  //   {
+  //     id: "real-person",
+  //     label: "特定の実在人物",
+  //     message: "実在人物の生成は許可されていません。",
+  //     enabled: true,
+  //     any: ["山田太郎", "taro yamada"],
+  //   },
+  custom: [],
 
   /* ---------- 数値上限 ---------- */
   limits: {
