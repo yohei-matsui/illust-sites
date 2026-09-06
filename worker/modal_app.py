@@ -44,6 +44,7 @@ image = (
     modal.Image.debian_slim(python_version="3.12")
     .pip_install(
         "torch>=2.6.0",
+        "torchvision",  # Qwen2-VL の画像/動画プロセッサが要求する
         "diffusers>=0.36.0",
         "transformers>=4.51.0",
         "accelerate>=1.2.0",
