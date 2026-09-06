@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI イラスト生成</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Hiragino Kaku Gothic ProN', 'Hiragino Sans', 'Meiryo', sans-serif;
+      background-color: #ffffff;
+      background-image:
+        linear-gradient(rgba(180,220,228,0.5) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(180,220,228,0.5) 1px, transparent 1px);
+      background-size: 30px 30px;
+      min-height: 100vh;
+      padding: 20px 16px 40px;
+      color: #333;
+    }
+    .container { max-width: 980px; margin: 0 auto; }
+    .topbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; }
+    .topbar h1 { font-size: 20px; color: #2d7f8c; }
+    .topbar a { color: #4aabb8; font-size: 13px; text-decoration: none; }
+    .topbar a:hover { text-decoration: underline; }
+
+    .layout { display: grid; grid-template-columns: 340px 1fr; gap: 16px; }
+    @media (max-width: 760px) { .layout { grid-template-columns: 1fr; } }
+
+    .panel {
+      background: #fff; border-radius: 12px; padding: 16px;
+      box-shadow: 0 2px 10px rgba(0,100,120,0.12);
+    }
+    label { display: block; font-size: 12px; font-weight: 700; color: #2d7f8c; margin: 12px 0 4px; }
+    label:first-child { margin-top: 0; }
+    textarea, input, select {
+      width: 100%; font: inherit; font-size: 14px; padding: 8px 10px;
+      border: 1px solid #b4dce4; border-radius: 8px; background: #fbfeff;
+    }
+    textarea { min-height: 120px; resize: vertical; }
+    textarea:focus, input:focus, select:focus { outline: 2px solid #4aabb8; border-color: transparent; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .hint { font-size: 11px; color: #777; margin-top: 4px; line-height: 1.5; }
+
+    button.primary {
+      width: 100%; margin-top: 16px; padding: 12px; font: inherit; font-size: 15px; font-weight: 700;
+      color: #fff; background: #4aabb8; border: 0; border-radius: 10px; cursor: pointer;
+      transition: background 0.15s ease, transform 0.15s ease;
+    }
+    button.primary:hover { background: #3a96a3; }
+    button.primary:disabled { background: #a9d4db; cursor: wait; }
+
+    .status { margin-top: 12px; font-size: 13px; min-height: 20px; line-height: 1.5; }
+    .status.error { color: #c0392b; }
+    .status.blocked { color: #b45309; }
+    .status.ok { color: #2d7f8c; }
+
+    .result { min-height: 320px; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+    .result img { max-width: 100%; height: auto; border-radius: 8px; box-shadow: 0 2px 12px rgba(0,0,0,0.12); }
+    .placeholder { color: #9bbfc6; font-size: 14px; text-align: center; line-height: 1.8; }
+    .spinner {
+      width: 36px; height: 36px; border: 4px solid #d5edf1; border-top-color: #4aabb8;
+      border-radius: 50%; animation: spin 0.9s linear infinite; margin-bottom: 12px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .meta { font-size: 11px; color: #777; margin-top: 10px; text-align: center; line-height: 1.6; word-break: break-all; }
+    .actions { margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
+    .actions button, .actions a {
+      font: inherit; font-size: 12px; padding: 6px 12px; border-radius: 8px; cursor: pointer;
+      border: 1px solid #4aabb8; color: #2d7f8c; background: #fff; text-decoration: none;
+    }
+    .actions button:hover, .actions a:hover { background: #eaf6f8; }
+
+    .history { margin-top: 16px; display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 8px; }
+    .history img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 6px; cursor: pointer; box-shadow: 0 1px 6px rgba(0,0,0,0.12); }
+
+    .rules { margin-top: 16px; font-size: 12px; color: #555; line-height: 1.7; }
+    .rules summary { cursor: pointer; color: #2d7f8c; font-weight: 700; }
+    .rules ul { padding-left: 18px; margin-top: 6px; }
+    .badge { display: inline-block; font-size: 10px; padding: 1px 6px; border-radius: 999px; margin-left: 4px; }
+    .badge.on { background: #d9f1f4; color: #2d7f8c; }
+    .badge.off { background: #eee; color: #888; }
+    .badge.legal { background: #fde8e8; color: #b03a2e; }
+    .footer { text-align: center; margin-top: 28px; color: #5a9aa8; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="topbar">
+      <h1>AI イラスト生成</h1>
+      <a href="index.html">← イラストサイト20選に戻る</a>
+    </div>
+
+    <div class="layout">
+      <form class="panel" id="form">
+        <label for="prompt">プロンプト</label>
+        <textarea id="prompt" placeholder="例: flat vector illustration of a video editor working on a laptop, pastel colors, white background" required></textarea>
+        <div class="hint">英語のほうが安定しますが、日本語でも生成できます。</div>
+
+        <label for="size">サイズ</label>
+        <select id="size">
+          <option value="1024x1024">正方形 1024×1024</option>
+          <option value="1280x720">横長 16:9 1280×720</option>
+          <option value="1152x896">横長 4:3 1152×896</option>
+          <option value="896x1152">縦長 3:4 896×1152</option>
+          <option value="720x1280">縦長 9:16 720×1280</option>
+        </select>
+
+        <div class="row">
+          <div>
+            <label for="steps">ステップ数</label>
+            <input id="steps" type="number" min="1" max="50" placeholder="自動">
+            <div class="hint">空欄でモデル既定値</div>
+          </div>
+          <div>
+            <label for="seed">シード</label>
+            <input id="seed" type="number" min="0" placeholder="ランダム">
+            <div class="hint">同じ値で同じ絵を再現</div>
+          </div>
+        </div>
+
+        <div id="accessRow" hidden>
+          <label for="accessKey">アクセスキー</label>
+          <input id="accessKey" type="password" autocomplete="off">
+          <div class="hint">サイト管理者が設定したキー。この端末に保存されます。</div>
+        </div>
+
+        <button class="primary" id="go" type="submit">生成する</button>
+        <div class="status" id="status"></div>
+
+        <details class="rules" id="rules">
+          <summary>このサイトの生成ルール</summary>
+          <div id="rulesBody">読み込み中…</div>
+        </details>
+      </form>
+
+      <div>
+        <div class="panel result" id="result">
+          <div class="placeholder">左のフォームにプロンプトを入れて<br>「生成する」を押してください</div>
+        </div>
+        <div class="history" id="history"></div>
+      </div>
+    </div>
+
+    <footer class="footer">オープンウェイトモデルを自前ホストで生成しています。</footer>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const state = { busy: false, history: [] };
+    const KEY_STORAGE = "illust-gen-access-key";
+
+    function accessKey() {
+      try { return localStorage.getItem(KEY_STORAGE) || ""; } catch { return ""; }
+    }
+    function headers(extra = {}) {
+      const h = { ...extra };
+      const k = accessKey();
+      if (k) h["x-access-key"] = k;
+      return h;
+    }
+    function setStatus(text, kind = "") {
+      const el = $("status");
+      el.textContent = text;
+      el.className = "status " + kind;
+    }
+    function showSpinner(text) {
+      $("result").innerHTML = `<div class="spinner"></div><div class="placeholder">${text}</div>`;
+    }
+    function showError(text) {
+      $("result").innerHTML = `<div class="placeholder">${text}</div>`;
+    }
+
+    function showImage(item) {
+      const url = `data:${item.mime};base64,${item.image_base64}`;
+      $("result").innerHTML = `
+        <img src="${url}" alt="生成画像">
+        <div class="meta">seed ${item.seed} · ${item.width}×${item.height} · ${item.steps} steps · ${item.elapsed_sec}s · ${item.model}</div>
+        <div class="actions">
+          <a href="${url}" download="illust-${item.seed}.png">PNG を保存</a>
+          <button type="button" id="reuseSeed">このシードを再利用</button>
+          <button type="button" id="copyPrompt">プロンプトをコピー</button>
+        </div>`;
+      $("reuseSeed").onclick = () => { $("seed").value = item.seed; };
+      $("copyPrompt").onclick = () => navigator.clipboard?.writeText(item.prompt);
+    }
+
+    function pushHistory(item) {
+      state.history.unshift(item);
+      state.history = state.history.slice(0, 12);
+      $("history").innerHTML = state.history
+        .map((h, i) => `<img src="data:${h.mime};base64,${h.image_base64}" data-i="${i}" alt="" title="${h.prompt.replace(/"/g, "&quot;")}">`)
+        .join("");
+      $("history").querySelectorAll("img").forEach((img) => {
+        img.onclick = () => showImage(state.history[Number(img.dataset.i)]);
+      });
+    }
+
+    async function loadRules() {
+      try {
+        const r = await fetch("/api/policy", { headers: headers() });
+        if (r.status === 401) {
+          $("accessRow").hidden = false;
+          $("rulesBody").textContent = "アクセスキーを入力すると表示されます。";
+          return;
+        }
+        const p = await r.json();
+        $("accessRow").hidden = !p.accessKeyRequired;
+        const li = (r, legal) =>
+          `<li>${r.label}<span class="badge ${legal ? "legal" : r.enabled ? "on" : "off"}">${legal ? "法律" : r.enabled ? "有効" : "無効"}</span></li>`;
+        $("rulesBody").innerHTML = `<ul>${p.legal.map((r) => li(r, true)).join("")}${p.custom.map((r) => li(r, false)).join("")}</ul>
+          <div class="hint">最大 ${p.limits.maxSize}px / ${p.limits.maxSteps} steps / ${p.limits.maxPromptLength} 文字</div>`;
+      } catch {
+        $("rulesBody").textContent = "ルール情報を取得できませんでした。";
+      }
+    }
+
+    async function poll(jobId) {
+      const started = Date.now();
+      for (;;) {
+        const r = await fetch(`/api/jobs/${encodeURIComponent(jobId)}`, { headers: headers() });
+        const data = await r.json();
+        if (data.status === "done") return data.result;
+        if (data.status === "failed" || !r.ok) throw new Error(data.error || "生成に失敗しました");
+        const sec = Math.round((Date.now() - started) / 1000);
+        showSpinner(sec > 20 ? `生成中… ${sec}s<br><small>初回は GPU の起動とモデル読み込みで 1〜2 分かかります</small>` : `生成中… ${sec}s`);
+        await new Promise((res) => setTimeout(res, 2000));
+      }
+    }
+
+    $("form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      if (state.busy) return;
+
+      const keyInput = $("accessKey").value.trim();
+      if (keyInput) { try { localStorage.setItem(KEY_STORAGE, keyInput); } catch {} }
+
+      const prompt = $("prompt").value.trim();
+      const [width, height] = $("size").value.split("x").map(Number);
+      const body = { prompt, width, height };
+      if ($("steps").value) body.steps = Number($("steps").value);
+      if ($("seed").value !== "") body.seed = Number($("seed").value);
+
+      state.busy = true;
+      $("go").disabled = true;
+      setStatus("");
+      showSpinner("送信中…");
+      try {
+        const r = await fetch("/api/generate", {
+          method: "POST",
+          headers: headers({ "Content-Type": "application/json" }),
+          body: JSON.stringify(body),
+        });
+        const data = await r.json();
+        if (r.status === 401) {
+          $("accessRow").hidden = false;
+          throw Object.assign(new Error("アクセスキーが必要です"), { kind: "error" });
+        }
+        if (data.blocked) {
+          throw Object.assign(new Error(`ルール「${data.label}」により生成できません。${data.error}`), { kind: "blocked" });
+        }
+        if (!r.ok) throw new Error(data.error || `エラー (${r.status})`);
+
+        const result = await poll(data.jobId);
+        const item = { ...result, prompt };
+        showImage(item);
+        pushHistory(item);
+        setStatus(`完了 (${result.elapsed_sec}s)`, "ok");
+      } catch (err) {
+        setStatus(err.message, err.kind || "error");
+        showError(err.kind === "blocked" ? "ルールにより生成されませんでした" : "生成できませんでした");
+      } finally {
+        state.busy = false;
+        $("go").disabled = false;
+      }
+    });
+
+    $("accessKey").value = accessKey();
+    loadRules();
+  </script>
+</body>
+</html>
