@@ -60,6 +60,13 @@ export default {
     minSize: 256,
     maxSize: 1536,   // 幅・高さの上限(px)。GPUメモリと生成時間に直結します
     maxSteps: 50,
+    // 参照画像つき編集
+    edit: {
+      maxImages: 3,
+      maxImageBytes: 2.5 * 1024 * 1024, // ブラウザ側で長辺 1024px に縮小して送ります
+      defaultSteps: 40,
+      defaultCfg: 4.0,
+    },
   },
 
   /* ---------- プロンプト加工 ---------- */
