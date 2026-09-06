@@ -31,16 +31,21 @@ Modal GPU ワーカー (worker/modal_app.py)   ← diffusers で実行。モデ�
 
 ### 1. Modal(GPU ワーカー)
 
+[modal.com](https://modal.com) でアカウントを作ってから(GitHub ログイン可)、リポジトリ直下で:
+
 ```bash
-pip install modal
-modal token new                       # ブラウザでログイン
-python3 -c "import secrets; print(secrets.token_urlsafe(32))"   # WORKER_TOKEN を作る
-modal secret create illust-gen WORKER_TOKEN=<上の値>
-modal deploy worker/modal_app.py
+bash worker/setup.sh
 ```
 
-デプロイ後に表示される `https://<workspace>--illust-gen-web.modal.run` が `WORKER_URL` です。
-`curl https://.../health` で `{"ok": true, ...}` が返れば動いています。
+ログイン → Secret 作成 → デプロイまで進み、`WORKER_TOKEN` と `WORKER_URL` が表示されます。
+手動でやる場合は `worker/setup.sh` の中身のとおりです。
+
+Vercel を設定する前に、ワーカー単体で動作確認できます(初回は数分かかります):
+
+```bash
+WORKER_URL=https://...modal.run WORKER_TOKEN=... python3 worker/smoke_test.py
+WORKER_URL=... WORKER_TOKEN=... python3 worker/smoke_test.py --edit base.jpg ref.png
+```
 
 ### 2. Vercel
 
