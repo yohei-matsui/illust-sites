@@ -439,11 +439,12 @@ function applyScheduleByMorioka_(m) {
   if (String(m.account.account_id) !== CONFIG.ID_MORIOKA) return false;
   const body = stripQuotes_(m.body);
   if (!/初稿スケジュール|[〜～~]\s*\d{1,2}\/\d{1,2}/.test(body)) return false; // 受付返信(「明日中に納期をご連絡」)では反応しない
-  const targets = findCaseRowsByText_(body);
+  const targets = findCaseRowsByText_(body, /*includeAssigned*/ true); // 担当者が入っていても提出予定日は埋める
   if (!targets.length) return false;
-  const due = parseDue_(body.match(/〜\s*(\d{1,2}\/\d{1,2})/) ? body.match(/〜\s*(\d{1,2}\/\d{1,2})/)[1] : '', new Date(m.send_time * 1000));
+  const dm = body.match(/[〜～~]\s*(\d{1,2}\/\d{1,2})/);
+  const due = parseDue_(dm ? dm[1] : '', new Date(m.send_time * 1000));
   targets.forEach(t => {
-    t.sheet.getRange(t.row, 8).setValue(CONFIG.ASSIGNEES[CONFIG.ID_MORIOKA]);
+    if (t.sheet.getRange(t.row, 8).getValue() === '') t.sheet.getRange(t.row, 8).setValue(CONFIG.ASSIGNEES[CONFIG.ID_MORIOKA]); // 未割り振りなら森岡さん
     if (due && t.sheet.getRange(t.row, 3).getValue() === '') t.sheet.getRange(t.row, 3).setValue(ymd_(due)).setNumberFormat('yyyy/mm/dd');
   });
   Logger.log(`納期連絡から森岡さん担当を反映: ${targets.length}行`);
