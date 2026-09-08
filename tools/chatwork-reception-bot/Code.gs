@@ -12,9 +12,11 @@
  *  - 依頼テンプレ(「□ 案件名」を含む投稿)を検知 → 10〜15分後に一次返信
  *    (0時〜9時の依頼は 9:00〜9:05 に返信。曜日は問わない)
  *  - 同時に制作グループで森岡さんへ依頼を共有し、案件シートに1行追加
- *  - 事務がToされた投稿のうち、修正・確認系は依頼者へ定型返信、
- *    納期・担当の問い合わせは制作グループで森岡さんへメンション
- *  - それ以外の投稿には反応しない
+ *  - 事務がToされた投稿は内容で分岐:
+ *      修正・確認系      → 依頼者へ定型返信 + 制作グループで森岡さんへ共有
+ *      納期・担当の問合せ → 依頼者には返さず、制作グループで森岡さんへメンション
+ *      その他            → 「追ってご連絡します」の汎用返信 + 森岡さんへ共有
+ *  - 事務へのメンションがない投稿(依頼テンプレ以外)には反応しない
  */
 
 // ===== 設定 =====
@@ -53,6 +55,18 @@ function msgRevisionReply(toId, toName) {
     'お世話になっております。\n' +
     '動画のご確認ありがとうございます。\n' +
     '内容を確認のうえ、追ってご連絡いたします🙇';
+}
+function msgGenericReply(toId, toName) {
+  return `[To:${toId}]${toName}さん\n` +
+    'お世話になっております。\n' +
+    'ご連絡ありがとうございます。\n' +
+    '内容を確認のうえ、追ってご連絡いたします🙇';
+}
+function msgShareGeneric(senderName, link) {
+  return `[To:${CONFIG.ID_MORIOKA}]森岡さん\n` +
+    `お疲れさまです。${senderName}さんから事務宛にご連絡が届いています。\n` +
+    'ご確認をお願いいたします。\n' +
+    `メッセージ: ${link}`;
 }
 function msgShareRequest(req, link, rowNo) {
   return `[To:${CONFIG.ID_MORIOKA}]森岡さん\n` +
@@ -124,11 +138,11 @@ function isToSelf_(body) {
 }
 function classify_(msg) {
   const body = stripQuotes_(msg.body);
-  if (isRequest_(body)) return 'request';
-  if (!isToSelf_(body)) return null;
+  if (isRequest_(body)) return 'request';          // 依頼テンプレ(メンションの有無を問わず)
+  if (!isToSelf_(body)) return null;               // 事務へのメンションがなければ無反応
   if (/修正|直し|変更|差し替え|カット|削除/.test(body)) return 'revision';
   if (/納期|担当|いつ|進捗|状況/.test(body)) return 'inquiry';
-  return null;
+  return 'mention';                                // その他の事務宛メンション → 汎用返信+森岡さんへ共有
 }
 function parseRequest_(msg) {
   const body = stripQuotes_(msg.body);
@@ -208,7 +222,7 @@ function detect_() {
     const kind = classify_(m);
     if (!kind) return;
     const payload = kind === 'request' ? parseRequest_(m) : { senderId: String(m.account.account_id), senderName: cleanName_(m.account.name) };
-    const at = kind === 'request' || kind === 'revision' ? replyAt_(m.send_time) : new Date();
+    const at = kind === 'inquiry' ? new Date() : replyAt_(m.send_time); // 依頼者へ返信するものは10〜15分後
     bot.appendRow([String(m.message_id), kind, new Date(m.send_time * 1000), at, payload.senderId, payload.senderName, JSON.stringify(payload), 'pending']);
   });
   setLastSeen_(maxT);
@@ -234,6 +248,9 @@ function dispatch_() {
         cwPost_(CONFIG.ROOM_PROD, msgShareRevision(payload.senderName, link));
       } else if (kind === 'inquiry') {
         cwPost_(CONFIG.ROOM_PROD, msgShareInquiry(payload.senderName, link));
+      } else if (kind === 'mention') {
+        cwPost_(CONFIG.ROOM_CLIENT, msgGenericReply(payload.senderId, payload.senderName));
+        cwPost_(CONFIG.ROOM_PROD, msgShareGeneric(payload.senderName, link));
       }
       bot.getRange(i + 2, 8).setValue('done');
     } catch (e) {
