@@ -438,13 +438,13 @@ function prevMonthName_(yyyymm) {
 function applyScheduleByMorioka_(m) {
   if (String(m.account.account_id) !== CONFIG.ID_MORIOKA) return false;
   const body = stripQuotes_(m.body);
-  if (!/初稿スケジュール|〜\s*\d{1,2}\/\d{1,2}/.test(body)) return false; // 受付返信(「明日中に納期をご連絡」)では反応しない
+  if (!/初稿スケジュール|[〜～~]\s*\d{1,2}\/\d{1,2}/.test(body)) return false; // 受付返信(「明日中に納期をご連絡」)では反応しない
   const targets = findCaseRowsByText_(body);
   if (!targets.length) return false;
   const due = parseDue_(body.match(/〜\s*(\d{1,2}\/\d{1,2})/) ? body.match(/〜\s*(\d{1,2}\/\d{1,2})/)[1] : '', new Date(m.send_time * 1000));
   targets.forEach(t => {
     t.sheet.getRange(t.row, 8).setValue(CONFIG.ASSIGNEES[CONFIG.ID_MORIOKA]);
-    if (due && t.sheet.getRange(t.row, 3).getValue() === '') t.sheet.getRange(t.row, 3).setValue(due).setNumberFormat('yyyy/mm/dd');
+    if (due && t.sheet.getRange(t.row, 3).getValue() === '') t.sheet.getRange(t.row, 3).setValue(ymd_(due)).setNumberFormat('yyyy/mm/dd');
   });
   Logger.log(`納期連絡から森岡さん担当を反映: ${targets.length}行`);
   return true;
