@@ -5,7 +5,7 @@
  *  1. スプレッドシートの「拡張機能 > Apps Script」にこのファイルを貼り付けて保存
  *  2. 「プロジェクトの設定 > スクリプト プロパティ」に下記を登録
  *       CW_TOKEN    : 事務アカウントのChatwork APIトークン
- *  3. 関数 setupSheet を実行(マスタ・テンプレート・今月タブ・集計・_bot を作る)
+ *  3. 関数 setupSheet を実行(マスタ・テンプレート・今月タブ・集計・_bot を作る/揃える)
  *  4. 関数 installTrigger を実行(1分おきに poll が動く)
  *
  * 動き
@@ -243,31 +243,24 @@ function dispatch_() {
 }
 
 // 月別タブ(YYYYMM)に動画本数ぶんの行を追加し、先頭行のNoを返す
+// 列: A No. | B 依頼日 | C 提出予定日 | D 依頼者 | E 案件名 | F 動画名 | G 動画尺 | H 担当者 | I YouTube URL | J 依頼メッセージ | K 備考 | L ステータス
 function appendCase_(req, requestedAt, link) {
   const sh = monthSheet_(requestedAt);
   const n = parseCount_(req.count);
-  const dueDate = parseDue_(req.due, requestedAt);
-  const genre = /差し替え/.test(req.caseName + req.count) ? '差し替え' : '';
   const colB = sh.getRange(2, 2, sh.getMaxRows() - 1, 1).getValues();
   let row = 2;
   while (row - 2 < colB.length && colB[row - 2][0] !== '') row++;
   if (row + n > sh.getMaxRows()) sh.insertRowsAfter(sh.getMaxRows(), n + 20);
+  const note = [req.due ? '希望納期: ' + req.due.slice(0, 40) : '', req.format ? 'フォーマット: ' + req.format.slice(0, 30) : ''].filter(Boolean).join(' / ');
   const rows = [];
   for (let i = 0; i < n; i++) {
     rows.push([
-      requestedAt, '', req.senderName, req.caseName || '(案件名未記載)', n > 1 ? `動画${i + 1}` : '',
-      genre, '', /*料金は数式*/ '', /*URL*/ '', i === 0 ? link : '',
-      /*担当者*/ '', dueDate || req.due, /*修正回数*/ '', /*備考*/ i === 0 && req.format ? req.format : '',
+      requestedAt, '', req.senderName.replace(/[\s\u3000]/g, ''), req.caseName || '(案件名未記載)', n > 1 ? `動画${i + 1}` : '',
     ]);
   }
-  // B..O のうち I(料金) と P(ステータス) は数式列なので飛ばして書く
-  const vals = rows.map(r => [r[0], r[1], r[2], r[3], r[4], r[5], r[6]]);          // B..H
-  sh.getRange(row, 2, n, 7).setValues(vals);
-  sh.getRange(row, 10, n, 2).setValues(rows.map(r => [r[8], r[9]]));               // J..K
-  sh.getRange(row, 12, n, 3).setValues(rows.map(r => [r[10], r[11], r[12]]));      // L..N
-  sh.getRange(row, 15, n, 1).setValues(rows.map(r => [r[13]]));                    // O 備考
+  sh.getRange(row, 2, n, 5).setValues(rows);                                   // B..F
+  sh.getRange(row, 10, n, 2).setValues(rows.map((_, i) => [i === 0 ? link : '', i === 0 ? note : ''])); // J..K
   sh.getRange(row, 2, n, 1).setNumberFormat('yyyy/mm/dd');
-  if (dueDate) sh.getRange(row, 13, n, 1).setNumberFormat('yyyy/mm/dd');
   return row - 1;
 }
 function parseCount_(text) {
@@ -301,137 +294,115 @@ function installTrigger() {
   ScriptApp.newTrigger('poll').timeBased().everyMinutes(1).create();
 }
 
-// ===== シート構築(参考台帳ベース) =====
-// 列: A No. | B 依頼日 | C 提出日 | D 依頼者 | E 案件名 | F 動画名 | G ジャンル | H 動画尺 | I 料金 | J YouTube URL
-//     K 依頼メッセージ | L 担当者 | M 納期 | N 修正回数 | O 備考 | P ステータス
+// ===== シート構築 =====
+// 列: A No. | B 依頼日 | C 提出予定日 | D 依頼者 | E 案件名 | F 動画名 | G 動画尺 | H 担当者 | I YouTube URL | J 依頼メッセージ | K 備考 | L ステータス
+const LAYOUT = {
+  headers: ['No.', '依頼日', '提出予定日', '依頼者', '案件名', '動画名（シナリオNo.など）', '動画尺', '担当者', 'YouTube URL', '依頼メッセージ', '備考', 'ステータス'],
+  widths: [45, 90, 90, 90, 220, 260, 70, 70, 280, 300, 200, 90],
+  fills: ['#D9D9D9', '#DDEBF7', '#E2EFDA', '#DDEBF7', '#DDEBF7', '#E2EFDA', '#E2EFDA', '#FCE4D6', '#E2EFDA', '#DDEBF7', '#E2EFDA', '#D9D9D9'],
+  rows: 300,
+};
+
 function setupSheet() {
   const ss = SpreadsheetApp.getActive();
-  const ROWS = 300;
 
   // --- マスタ ---
   let ms = ss.getSheetByName(CONFIG.SHEET_MASTER) || ss.insertSheet(CONFIG.SHEET_MASTER);
   ms.clear();
   ms.getRange('A1').setValue('担当者').setFontWeight('bold');
   ms.getRange('A2:A4').setValues([['森岡'], ['牛嶋'], ['松井']]).setFontColor('#0000FF');
-  ms.getRange('C1').setValue('ジャンル').setFontWeight('bold');
-  ms.getRange('C2:C5').setValues([['属人'], ['非属人'], ['差し替え'], ['AI']]).setFontColor('#0000FF');
-  ms.getRange('E1').setValue('動画尺').setFontWeight('bold');
+  ms.getRange('C1').setValue('動画尺').setFontWeight('bold');
   const lens = ['〜15秒', '〜30秒', '〜45秒', '〜60秒', '〜90秒', '〜120秒', '〜150秒', '〜180秒', '〜270秒', '〜300秒'];
-  ms.getRange(2, 5, lens.length, 1).setValues(lens.map(x => [x])).setFontColor('#0000FF');
-  // 料金表(過去6か月の実績から。行=動画尺、列=ジャンル)
-  ms.getRange('G1').setValue('料金表(円) 行=動画尺 / 列=ジャンル ※青字は編集可').setFontWeight('bold');
-  ms.getRange('G2:K2').setValues([['動画尺', '属人', '非属人', '差し替え', 'AI']]).setFontWeight('bold');
-  const price = [
-    ['〜15秒', 3500, 4500, 2000, ''],
-    ['〜30秒', 3500, 4500, 4000, ''],
-    ['〜45秒', 3500, 4500, 6000, ''],
-    ['〜60秒', 3500, 4500, '', 9000],
-    ['〜90秒', 4500, 5500, '', 10000],
-    ['〜120秒', 5500, 6500, '', ''],
-    ['〜150秒', 6500, 7500, '', ''],
-    ['〜180秒', '', '', '', ''],
-    ['〜270秒', 10500, '', '', ''],
-    ['〜300秒', 11500, '', '', ''],
-  ];
-  ms.getRange(3, 7, price.length, 5).setValues(price);
-  ms.getRange(3, 8, price.length, 4).setFontColor('#0000FF').setNumberFormat('#,##0');
-  ms.getRange('G14').setValue('差し替えで動画尺が空欄のときの料金').setFontWeight('bold');
-  ms.getRange('H14').setValue(2000).setFontColor('#0000FF').setNumberFormat('#,##0');
-  ms.getRange('G16').setValue('※ 料金表は 202602〜202607 タブの実績から起こした値です。空欄の組み合わせは料金が自動計算されないので手入力してください。').setFontColor('#808080');
-  ms.setColumnWidths(1, 11, 100); ms.setColumnWidth(7, 90);
+  ms.getRange(2, 3, lens.length, 1).setValues(lens.map(x => [x])).setFontColor('#0000FF');
+  ms.getRange('A7').setValue('青字は編集可。担当者・動画尺は月別タブのプルダウンに反映されます。').setFontColor('#808080');
+  ms.setColumnWidths(1, 3, 110);
 
   // --- テンプレート(月別タブの元) ---
   let tpl = ss.getSheetByName(CONFIG.SHEET_TEMPLATE) || ss.insertSheet(CONFIG.SHEET_TEMPLATE);
   tpl.clear(); tpl.clearConditionalFormatRules();
-  const headers = ['No.', '依頼日', '提出日', '依頼者', '案件名', '動画名（シナリオNo.など）', 'ジャンル', '動画尺', '料金', 'YouTube URL', '依頼メッセージ', '担当者', '納期', '修正回数', '備考', 'ステータス'];
-  const widths = [45, 90, 90, 90, 220, 260, 80, 70, 70, 280, 300, 70, 90, 60, 200, 90];
-  if (tpl.getMaxRows() < ROWS + 2) tpl.insertRowsAfter(tpl.getMaxRows(), ROWS + 2 - tpl.getMaxRows());
-  if (tpl.getMaxColumns() < headers.length) tpl.insertColumnsAfter(tpl.getMaxColumns(), headers.length - tpl.getMaxColumns());
-  tpl.getRange(1, 1, 1, headers.length).setValues([headers]).setFontWeight('bold').setBackground('#EFEFEF').setVerticalAlignment('middle').setWrap(true);
-  widths.forEach((w, i) => tpl.setColumnWidth(i + 1, w));
-  // 記入者の色分け(ヘッダーのみ)
-  tpl.getRange(1, 2, 1, 5).setBackground('#DDEBF7');   // B〜F 事務(Bot)が起票。F動画名は担当者が補完
-  tpl.getRange(1, 11, 1, 1).setBackground('#DDEBF7');  // K
-  tpl.getRange(1, 13, 1, 1).setBackground('#DDEBF7');  // M 納期(希望納期をBotが仮入力→森岡さんが確定)
-  tpl.getRange(1, 12, 1, 1).setBackground('#FCE4D6');  // L 担当者 = 森岡さん
-  [3, 6, 7, 8, 10, 14, 15].forEach(c => tpl.getRange(1, c).setBackground('#E2EFDA')); // 担当者
-  [1, 9, 16].forEach(c => tpl.getRange(1, c).setBackground('#D9D9D9'));           // 自動
-  tpl.getRange(1, 9).setNote('ジャンル×動画尺からマスタの料金表で自動計算。例外は数値を直接上書きしてください。');
-  tpl.getRange(1, 16).setNote('自動判定: 提出日あり→納品済 / 担当者あり→制作中 / それ以外→未割り振り。提出日に「中止」と入力すると中止。');
-  tpl.getRange(1, 13).setNote('Botは依頼文の希望納期を仮入力します。森岡さんが確定納期に書き換えてください。');
-
-  const fNo = [], fPrice = [], fSt = [];
-  for (let r = 2; r <= ROWS + 1; r++) {
-    fNo.push([`=IF(B${r}="","",ROW()-1)`]);
-    fPrice.push([`=IF(OR(B${r}="",G${r}=""),"",IF(AND(G${r}="差し替え",H${r}=""),マスタ!$H$14,IFERROR(INDEX(マスタ!$H$3:$K$12,MATCH(H${r},マスタ!$G$3:$G$12,0),MATCH(G${r},マスタ!$H$2:$K$2,0)),"")))`]);
-    fSt.push([`=IF(B${r}="","",IF(C${r}="中止","中止",IF(C${r}<>"","納品済",IF(L${r}<>"","制作中","未割り振り"))))`]);
-  }
-  tpl.getRange(2, 1, ROWS, 1).setFormulas(fNo);
-  tpl.getRange(2, 9, ROWS, 1).setFormulas(fPrice).setNumberFormat('#,##0');
-  tpl.getRange(2, 16, ROWS, 1).setFormulas(fSt);
-  tpl.getRange(2, 2, ROWS, 2).setNumberFormat('yyyy/mm/dd');
-  tpl.getRange(2, 13, ROWS, 1).setNumberFormat('yyyy/mm/dd');
-  // 合計(ヘッダー右側)
-  tpl.getRange(1, 18).setValue('料金合計').setFontWeight('bold');
-  tpl.getRange(2, 18).setFormula(`=SUM(I2:I${ROWS + 1})`).setNumberFormat('#,##0');
-  tpl.getRange(1, 19).setValue('本数').setFontWeight('bold');
-  tpl.getRange(2, 19).setFormula(`=COUNTA(B2:B${ROWS + 1})`);
-  tpl.setColumnWidth(17, 20);
-
-  // 入力規則
-  const dv = (rng) => SpreadsheetApp.newDataValidation().requireValueInRange(rng, true).setAllowInvalid(true).build();
-  tpl.getRange(2, 12, ROWS, 1).setDataValidation(dv(ms.getRange('A2:A20')));
-  tpl.getRange(2, 7, ROWS, 1).setDataValidation(dv(ms.getRange('C2:C20')));
-  tpl.getRange(2, 8, ROWS, 1).setDataValidation(dv(ms.getRange('E2:E20')));
-
-  // 条件付き書式
-  const body = tpl.getRange(2, 1, ROWS, headers.length);
-  const rules = [
-    // 納期を過ぎて未提出 → 行を薄赤
-    SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied(`=AND($B2<>"",$C2="",$M2<>"",ISNUMBER($M2),$M2<TODAY())`).setBackground('#F8CBAD').setRanges([body]).build(),
-    // 未割り振り → 担当者セルを黄色
-    SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied(`=AND($B2<>"",$L2="")`).setBackground('#FFF2CC').setRanges([tpl.getRange(2, 12, ROWS, 1)]).build(),
-    // 納品済 → ステータスを緑
-    SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo('納品済').setBackground('#C6E0B4').setRanges([tpl.getRange(2, 16, ROWS, 1)]).build(),
-    SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo('中止').setBackground('#D9D9D9').setFontColor('#808080').setRanges([tpl.getRange(2, 16, ROWS, 1)]).build(),
-  ];
-  tpl.setConditionalFormatRules(rules);
-  tpl.setFrozenRows(1); tpl.setFrozenColumns(5);
-  tpl.getRange(ROWS + 3, 1).setValue('凡例: 青=事務(Bot)が起票 / 橙=森岡さんが記入 / 緑=担当者が記入 / 灰=自動。行は依頼日の月のタブに入ります。請求は提出日基準なので、月をまたいだ行は提出月のタブへ移してください。').setFontColor('#808080');
+  applyLayout_(tpl);
   tpl.hideSheet();
 
-  // 今月のタブを用意
-  monthSheet_(new Date());
-  // 集計タブ
+  // 今月のタブを用意(既にあれば数式・書式だけ揃え直す。入力済みデータは消さない)
+  const cur = monthSheet_(new Date());
+  if (cur.getLastRow() > 0) applyLayout_(cur, /*keepData*/ true);
+
   setupSummary_();
   botSheet_();
-  // 初期状態の空タブ「シート1」が残っていれば削除
   const s1 = ss.getSheetByName('シート1');
   if (s1 && s1.getLastRow() === 0 && s1.getLastColumn() === 0 && ss.getSheets().length > 1) ss.deleteSheet(s1);
+}
+
+// 既存の月別タブに数式・入力規則・条件付き書式を再適用する(手動実行用)
+function applyLayoutToActiveSheet() {
+  applyLayout_(SpreadsheetApp.getActiveSheet(), true);
+}
+
+function applyLayout_(sh, keepData) {
+  const ss = SpreadsheetApp.getActive();
+  const ms = ss.getSheetByName(CONFIG.SHEET_MASTER);
+  const { headers, widths, fills, rows: ROWS } = LAYOUT;
+  const NC = headers.length;
+  if (sh.getMaxRows() < ROWS + 2) sh.insertRowsAfter(sh.getMaxRows(), ROWS + 2 - sh.getMaxRows());
+  if (sh.getMaxColumns() < NC) sh.insertColumnsAfter(sh.getMaxColumns(), NC - sh.getMaxColumns());
+
+  sh.getRange(1, 1, 1, NC).setValues([headers]).setFontWeight('bold').setVerticalAlignment('middle').setWrap(true);
+  headers.forEach((_, i) => { sh.setColumnWidth(i + 1, widths[i]); sh.getRange(1, i + 1).setBackground(fills[i]); });
+  sh.getRange(1, 3).setNote('担当者が初稿の提出予定日を入れます。中止の場合は「中止」と入力。');
+  sh.getRange(1, 11).setNote('Botは依頼文の希望納期とフォーマットをここに入れます。');
+  sh.getRange(1, 12).setNote('自動判定: YouTube URLあり→納品済 / 担当者あり→制作中 / それ以外→未割り振り。提出予定日に「中止」で中止。');
+
+  const fNo = [], fSt = [];
+  for (let r = 2; r <= ROWS + 1; r++) {
+    fNo.push([`=IF(B${r}="","",ROW()-1)`]);
+    fSt.push([`=IF(B${r}="","",IF(C${r}="中止","中止",IF(I${r}<>"","納品済",IF(H${r}<>"","制作中","未割り振り"))))`]);
+  }
+  sh.getRange(2, 1, ROWS, 1).setFormulas(fNo).setBackground('#F3F3F3');
+  sh.getRange(2, 12, ROWS, 1).setFormulas(fSt).setBackground('#F3F3F3');
+  sh.getRange(2, 2, ROWS, 2).setNumberFormat('yyyy/mm/dd');
+
+  const dv = (rng) => SpreadsheetApp.newDataValidation().requireValueInRange(rng, true).setAllowInvalid(true).build();
+  sh.getRange(2, 8, ROWS, 1).setDataValidation(dv(ms.getRange('A2:A20')));
+  sh.getRange(2, 7, ROWS, 1).setDataValidation(dv(ms.getRange('C2:C20')));
+
+  sh.clearConditionalFormatRules();
+  const body = sh.getRange(2, 1, ROWS, NC);
+  sh.setConditionalFormatRules([
+    // 提出予定日を過ぎてURL未入力 → 行を薄赤
+    SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied(`=AND($B2<>"",$I2="",ISNUMBER($C2),$C2<TODAY())`).setBackground('#F8CBAD').setRanges([body]).build(),
+    // 担当者が空 → 担当者セルを黄色
+    SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied(`=AND($B2<>"",$H2="")`).setBackground('#FFF2CC').setRanges([sh.getRange(2, 8, ROWS, 1)]).build(),
+    SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo('納品済').setBackground('#C6E0B4').setRanges([sh.getRange(2, 12, ROWS, 1)]).build(),
+    SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo('中止').setBackground('#D9D9D9').setFontColor('#808080').setRanges([sh.getRange(2, 12, ROWS, 1)]).build(),
+  ]);
+  sh.setFrozenRows(1); sh.setFrozenColumns(5);
+  if (!keepData) {
+    sh.getRange(ROWS + 3, 1).setValue('凡例: 青=事務(Bot)が起票 / 橙=森岡さんが記入 / 緑=担当者が記入 / 灰=自動。行は依頼日の月のタブに入ります。').setFontColor('#808080');
+  }
 }
 
 // 集計タブだけ作り直す(手動実行用)
 function setupSummary() { setupSummary_(); }
 
-// 集計: 月別タブの料金合計・本数を一覧
+// 集計: 月別タブの本数とステータス内訳
 function setupSummary_() {
   const ss = SpreadsheetApp.getActive();
   let sm = ss.getSheetByName(CONFIG.SHEET_SUMMARY) || ss.insertSheet(CONFIG.SHEET_SUMMARY);
   sm.clear();
-  sm.getRange('A1:E1').setValues([['月(タブ名)', '本数', '料金合計', '未割り振り', '納品済']]).setFontWeight('bold').setBackground('#EFEFEF');
+  sm.getRange('A1:F1').setValues([['月(タブ名)', '本数', '未割り振り', '制作中', '納品済', '中止']]).setFontWeight('bold').setBackground('#EFEFEF');
   const rows = [];
   for (let i = 0; i < 24; i++) {
     const r = i + 2;
+    const rng = (col) => `INDIRECT("'"&A${r}&"'!${col}2:${col}301")`;
     rows.push([
-      `=IF(A${r}="","",IFERROR(COUNTA(INDIRECT("'"&A${r}&"'!B2:B301")),"タブなし"))`,
-      `=IF(A${r}="","",IFERROR(SUM(INDIRECT("'"&A${r}&"'!I2:I301")),""))`,
-      `=IF(A${r}="","",IFERROR(COUNTIF(INDIRECT("'"&A${r}&"'!P2:P301"),"未割り振り"),""))`,
-      `=IF(A${r}="","",IFERROR(COUNTIF(INDIRECT("'"&A${r}&"'!P2:P301"),"納品済"),""))`,
+      `=IF(A${r}="","",IFERROR(COUNTA(${rng('B')}),"タブなし"))`,
+      `=IF(A${r}="","",IFERROR(COUNTIF(${rng('L')},"未割り振り"),""))`,
+      `=IF(A${r}="","",IFERROR(COUNTIF(${rng('L')},"制作中"),""))`,
+      `=IF(A${r}="","",IFERROR(COUNTIF(${rng('L')},"納品済"),""))`,
+      `=IF(A${r}="","",IFERROR(COUNTIF(${rng('L')},"中止"),""))`,
     ]);
   }
-  sm.getRange(2, 2, rows.length, 4).setFormulas(rows);
-  sm.getRange(2, 3, rows.length, 1).setNumberFormat('#,##0');
-  // 今月から過去24か月ぶんのタブ名を入れる
+  sm.getRange(2, 2, rows.length, 5).setFormulas(rows);
   const names = [];
   const now = new Date();
   for (let i = 0; i < 24; i++) {
@@ -439,8 +410,24 @@ function setupSummary_() {
     names.push([Utilities.formatDate(d, CONFIG.TZ, 'yyyyMM')]);
   }
   sm.getRange(2, 1, names.length, 1).setNumberFormat('@').setValues(names).setFontColor('#0000FF');
-  sm.getRange('G1').setValue('A列のタブ名は編集可(青字)。存在しない月は「タブなし」と表示されます。').setFontColor('#808080');
-  sm.setColumnWidths(1, 5, 110);
+  sm.getRange('H1').setValue('A列のタブ名は編集可(青字)。存在しない月は「タブなし」と表示されます。').setFontColor('#808080');
+  sm.setColumnWidths(1, 6, 100);
+}
+
+// ===== テスト用: 今月の過去依頼をChatworkに投稿せずシートに流し込む =====
+function backfillThisMonth() {
+  const month = Utilities.formatDate(new Date(), CONFIG.TZ, 'yyyyMM');
+  const msgs = cwGet_(`/rooms/${CONFIG.ROOM_CLIENT}/messages?force=1`);
+  let n = 0;
+  msgs.forEach(m => {
+    if (CONFIG.INTERNAL_IDS.includes(String(m.account.account_id))) return;
+    if (classify_(m) !== 'request') return;
+    const sent = new Date(m.send_time * 1000);
+    if (Utilities.formatDate(sent, CONFIG.TZ, 'yyyyMM') !== month) return;
+    appendCase_(parseRequest_(m), sent, messageLink_(CONFIG.ROOM_CLIENT, m.message_id));
+    n++;
+  });
+  Logger.log(`${month}: ${n}件の依頼を起票しました(Chatworkへの投稿なし)`);
 }
 function colLetter_(n) { let s = ''; while (n > 0) { const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - 1) / 26); } return s; }
 
