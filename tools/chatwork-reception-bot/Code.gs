@@ -59,7 +59,7 @@ function msgShareRequest(req, link, rowNo) {
     'お疲れさまです。新規のご依頼が届きました。\n' +
     '割り振りと納期のご連絡をお願いいたします。\n\n' +
     `案件名: ${req.caseName || '(記載なし)'}\n` +
-    `本数: ${req.count}${req.format ? '(' + req.format + ')' : ''}\n` +
+    `本数: ${req.count.slice(0, 40)}${req.format ? '(' + req.format + ')' : ''}\n` +
     `希望納期: ${req.due || '記載なし'}\n` +
     `依頼者: ${req.senderName}さん\n` +
     `依頼メッセージ: ${link}\n` +
