@@ -26,6 +26,8 @@ const CONFIG = {
   ID_SELF: '11316015',           // 有流悟 理澄 -事務-
   ID_MORIOKA: '10003938',        // 森岡 奈々
   INTERNAL_IDS: ['11316015', '10003938', '7433976', '11286789'], // 事務・森岡・松井・牛嶋
+  ASSIGNEES: { '10003938': '森岡', '11286789': '牛嶋', '7433976': '松井' }, // アカウントID → 台帳の担当者名
+  ASSIGNERS: ['10003938', '7433976'],  // 割り振りを決められる人(森岡・松井)
   SHARE_MAIL: 'ushikun1130@gmail.com',
   TZ: 'Asia/Tokyo',
   REPLY_MIN_MINUTES: 10,
@@ -193,6 +195,7 @@ function replyAt_(sendTime) {
   const base = parseJst_(ymd + ' 09:00:00');
   return new Date(base.getTime() + rand(0, CONFIG.MORNING_WINDOW_MINUTES) * 60000);
 }
+function ymd_(d) { return Utilities.formatDate(d, CONFIG.TZ, 'yyyy/MM/dd'); }
 function parseJst_(s) {
   // 'yyyy/MM/dd HH:mm:ss' を JST として Date に
   const [d, t] = s.split(' ');
@@ -228,6 +231,7 @@ function poll() {
   try {
     detect_();
     dispatch_();
+    detectAssignments_();
   } finally { lock.releaseLock(); }
 }
 
@@ -240,7 +244,11 @@ function detect_() {
   msgs.forEach(m => {
     if (m.send_time <= since) return;
     maxT = Math.max(maxT, m.send_time);
-    if (CONFIG.INTERNAL_IDS.includes(String(m.account.account_id))) return;
+    if (CONFIG.INTERNAL_IDS.includes(String(m.account.account_id))) {
+      // 森岡さんが割り振りなしで納期を連絡した場合は森岡さん対応と判断し、担当者と提出予定日を入れる
+      try { applyScheduleByMorioka_(m); } catch (e) { Logger.log('schedule error: ' + e.message); }
+      return;
+    }
     if (known.has(String(m.message_id))) return;
     const kind = classify_(m);
     if (!kind) return;
@@ -265,7 +273,11 @@ function dispatch_() {
       if (kind === 'request') {
         const rowNo = appendCase_(payload, new Date(r[2]), link);
         cwPost_(CONFIG.ROOM_CLIENT, msgFirstReply(payload.senderId, payload.senderName, payload.caseName));
-        cwPost_(CONFIG.ROOM_PROD, msgShareRequest(payload, link, rowNo));
+        const shared = cwPost_(CONFIG.ROOM_PROD, msgShareRequest(payload, link, rowNo));
+        // 共有メッセージへの返信で担当者を決められるよう、案件との対応を記録
+        payload.shareMessageId = String(shared.message_id);
+        payload.sheetName = Utilities.formatDate(new Date(r[2]), CONFIG.TZ, 'yyyyMM');
+        bot.getRange(i + 2, 7).setValue(JSON.stringify(payload));
       } else if (kind === 'revision') {
         cwPost_(CONFIG.ROOM_CLIENT, msgRevisionReply(payload.senderId, payload.senderName));
         cwPost_(CONFIG.ROOM_PROD, msgShareRevision(payload.senderName, link));
@@ -286,7 +298,7 @@ function dispatch_() {
 // 列: A No. | B 依頼日 | C 提出予定日 | D 依頼者 | E 案件名 | F 動画名 | G 動画尺 | H 担当者 | I YouTube URL | J 依頼メッセージ | K 備考 | L ステータス
 function appendCase_(req, requestedAt, link) {
   const sh = monthSheet_(requestedAt);
-  requestedAt = parseJst_(Utilities.formatDate(requestedAt, CONFIG.TZ, 'yyyy/MM/dd') + ' 00:00:00'); // 時刻を落とす
+  const requestedYmd = ymd_(requestedAt); // 'yyyy/MM/dd' の文字列で書き、シート側で日付として解釈させる
   const n = parseCount_(req.count);
   const colB = sh.getRange(2, 2, sh.getMaxRows() - 1, 1).getValues();
   let row = 2;
@@ -296,7 +308,7 @@ function appendCase_(req, requestedAt, link) {
   const rows = [];
   for (let i = 0; i < n; i++) {
     rows.push([
-      requestedAt, '', req.senderName.replace(/[\s\u3000]/g, ''), req.caseName || '(案件名未記載)', n > 1 ? `動画${i + 1}` : '',
+      requestedYmd, '', req.senderName.replace(/[\s\u3000]/g, ''), req.caseName || '(案件名未記載)', n > 1 ? `動画${i + 1}` : '',
     ]);
   }
   sh.getRange(row, 2, n, 5).setValues(rows);                                   // B..F
@@ -327,6 +339,123 @@ function monthSheet_(date) {
   ss.setActiveSheet(sh); ss.moveActiveSheet(1);
   sh.showSheet();
   return sh;
+}
+
+// ===== 割り振りの自動反映(制作グループ) =====
+// 森岡さん(または松井さん)が制作グループで担当者にToした投稿から、案件名を探して台帳の担当者列を埋める。
+//   例1: 「[To:牛嶋] 橋谷のり子さま案件、お願いします」 → 橋谷のり子さんの行の担当者=牛嶋
+//   例2: Botの共有メッセージに返信して「牛嶋さんお願いします」 → その案件の担当者=牛嶋
+//   例3: 森岡さんが To なしで「成宮さんは私が担当します」 → 担当者=森岡
+function detectAssignments_() {
+  const props = PropertiesService.getScriptProperties();
+  let since = Number(props.getProperty('LAST_SEEN_PROD') || 0);
+  if (!since) { since = Math.floor(Date.now() / 1000); props.setProperty('LAST_SEEN_PROD', String(since)); return; }
+  const msgs = cwGet_(`/rooms/${CONFIG.ROOM_PROD}/messages?force=1`);
+  let maxT = since;
+  msgs.forEach(m => {
+    if (m.send_time <= since) return;
+    maxT = Math.max(maxT, m.send_time);
+    try { applyAssignment_(m); } catch (e) { Logger.log('assignment error: ' + e.message); }
+  });
+  props.setProperty('LAST_SEEN_PROD', String(maxT));
+}
+
+function applyAssignment_(m) {
+  const senderId = String(m.account.account_id);
+  if (!CONFIG.ASSIGNERS.includes(senderId)) return false;
+  const body = stripQuotes_(m.body);
+
+  // 担当者: To されている人 → いなければ「私が/こちらで 担当・対応」なら発言者
+  let assignee = null;
+  const to = body.match(/\[To:(\d+)\]/g) || [];
+  for (const t of to) { const id = t.match(/\d+/)[0]; if (CONFIG.ASSIGNEES[id]) { assignee = CONFIG.ASSIGNEES[id]; break; } }
+  if (!assignee) {
+    for (const [id, name] of Object.entries(CONFIG.ASSIGNEES)) {
+      if (id !== senderId && new RegExp(name + '(さん|くん|氏)?').test(body)) { assignee = name; break; }
+    }
+  }
+  if (!assignee && /(私|わたし|こちら|自分)(が|で)?.*(担当|対応|進め|やり)/.test(body)) assignee = CONFIG.ASSIGNEES[senderId];
+  if (!assignee) return false;
+
+  // 案件: Botの共有メッセージへの返信なら、その案件。そうでなければ本文中の案件名で照合
+  let targets = [];
+  const rp = body.match(/\[rp aid=\d+ to=\d+-(\d+)\]/);
+  if (rp) {
+    const bot = botSheet_();
+    const rows = bot.getRange(2, 1, Math.max(bot.getLastRow() - 1, 1), 8).getValues();
+    const hit = rows.find(r => { try { return JSON.parse(r[6] || '{}').shareMessageId === rp[1]; } catch (e) { return false; } });
+    if (hit) { const p = JSON.parse(hit[6]); targets = findCaseRows_(p.sheetName, p.caseName); }
+  }
+  if (!targets.length) targets = findCaseRowsByText_(body);
+  if (!targets.length) return false;
+
+  targets.forEach(t => {
+    const rng = t.sheet.getRange(t.row, 8);
+    if (rng.getValue() === '') rng.setValue(assignee);
+  });
+  Logger.log(`担当者を反映: ${assignee} ← ${targets.length}行`);
+  return true;
+}
+
+// 案件名の照合用に正規化(敬称・空白・括弧を除く)
+function normCase_(s) {
+  return String(s || '').replace(/（[^）]*）|\([^)]*\)/g, '').replace(/株式会社|有限会社|案件|さま|さん|様|御中|[\s\u3000・、。！!]/g, '').trim();
+}
+// 今月と前月のタブから、案件名が一致し担当者が空の行を返す
+function findCaseRows_(sheetName, caseName) {
+  const ss = SpreadsheetApp.getActive();
+  const key = normCase_(caseName);
+  const out = [];
+  const sheets = [sheetName, prevMonthName_(sheetName)].map(n => ss.getSheetByName(n)).filter(Boolean);
+  sheets.forEach(sh => {
+    const vals = sh.getRange(2, 2, Math.max(sh.getLastRow() - 1, 1), 7).getValues(); // B..H
+    vals.forEach((v, i) => { if (v[0] !== '' && normCase_(v[3]) === key && v[6] === '') out.push({ sheet: sh, row: i + 2 }); });
+  });
+  return out;
+}
+// 本文に含まれる案件名(担当者が空の行)を探す
+function findCaseRowsByText_(body, includeAssigned) {
+  const ss = SpreadsheetApp.getActive();
+  const text = normCase_(body);
+  const cur = Utilities.formatDate(new Date(), CONFIG.TZ, 'yyyyMM');
+  const out = [];
+  [cur, prevMonthName_(cur)].map(n => ss.getSheetByName(n)).filter(Boolean).forEach(sh => {
+    const vals = sh.getRange(2, 2, Math.max(sh.getLastRow() - 1, 1), 7).getValues();
+    vals.forEach((v, i) => {
+      const key = normCase_(v[3]);
+      if (v[0] !== '' && key.length >= 2 && (includeAssigned || v[6] === '') && text.indexOf(key) >= 0) out.push({ sheet: sh, row: i + 2 });
+    });
+  });
+  return out;
+}
+function prevMonthName_(yyyymm) {
+  const y = Number(yyyymm.slice(0, 4)), mo = Number(yyyymm.slice(4, 6));
+  const d = new Date(y, mo - 2, 1);
+  return Utilities.formatDate(d, CONFIG.TZ, 'yyyyMM');
+}
+
+// 森岡さんの納期連絡(TendAiルーム)→ 未割り振りの該当案件を「森岡」にし、「〜M/D」があれば提出予定日に入れる
+function applyScheduleByMorioka_(m) {
+  if (String(m.account.account_id) !== CONFIG.ID_MORIOKA) return false;
+  const body = stripQuotes_(m.body);
+  if (!/初稿スケジュール|〜\s*\d{1,2}\/\d{1,2}/.test(body)) return false; // 受付返信(「明日中に納期をご連絡」)では反応しない
+  const targets = findCaseRowsByText_(body);
+  if (!targets.length) return false;
+  const due = parseDue_(body.match(/〜\s*(\d{1,2}\/\d{1,2})/) ? body.match(/〜\s*(\d{1,2}\/\d{1,2})/)[1] : '', new Date(m.send_time * 1000));
+  targets.forEach(t => {
+    t.sheet.getRange(t.row, 8).setValue(CONFIG.ASSIGNEES[CONFIG.ID_MORIOKA]);
+    if (due && t.sheet.getRange(t.row, 3).getValue() === '') t.sheet.getRange(t.row, 3).setValue(due).setNumberFormat('yyyy/mm/dd');
+  });
+  Logger.log(`納期連絡から森岡さん担当を反映: ${targets.length}行`);
+  return true;
+}
+
+// テスト用: 制作グループとTendAiルームの直近メッセージから割り振り・納期を読み取って反映(投稿なし)
+function backfillAssignments() {
+  let n = 0;
+  cwGet_(`/rooms/${CONFIG.ROOM_PROD}/messages?force=1`).forEach(m => { try { if (applyAssignment_(m)) n++; } catch (e) { Logger.log(e.message); } });
+  cwGet_(`/rooms/${CONFIG.ROOM_CLIENT}/messages?force=1`).forEach(m => { try { if (applyScheduleByMorioka_(m)) n++; } catch (e) { Logger.log(e.message); } });
+  Logger.log(`${n}件の投稿から担当者・提出予定日を反映しました`);
 }
 
 // ===== トリガー =====
