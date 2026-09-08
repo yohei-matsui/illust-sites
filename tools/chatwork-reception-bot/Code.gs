@@ -405,7 +405,13 @@ function setupSheet() {
   // 集計タブ
   setupSummary_();
   botSheet_();
+  // 初期状態の空タブ「シート1」が残っていれば削除
+  const s1 = ss.getSheetByName('シート1');
+  if (s1 && s1.getLastRow() === 0 && s1.getLastColumn() === 0 && ss.getSheets().length > 1) ss.deleteSheet(s1);
 }
+
+// 集計タブだけ作り直す(手動実行用)
+function setupSummary() { setupSummary_(); }
 
 // 集計: 月別タブの料金合計・本数を一覧
 function setupSummary_() {
@@ -417,10 +423,10 @@ function setupSummary_() {
   for (let i = 0; i < 24; i++) {
     const r = i + 2;
     rows.push([
-      `=IF(A${r}="","",IFERROR(COUNTA(INDIRECT(A${r}&"!B2:B301")),"タブなし"))`,
-      `=IF(A${r}="","",IFERROR(SUM(INDIRECT(A${r}&"!I2:I301")),""))`,
-      `=IF(A${r}="","",IFERROR(COUNTIF(INDIRECT(A${r}&"!P2:P301"),"未割り振り"),""))`,
-      `=IF(A${r}="","",IFERROR(COUNTIF(INDIRECT(A${r}&"!P2:P301"),"納品済"),""))`,
+      `=IF(A${r}="","",IFERROR(COUNTA(INDIRECT("'"&A${r}&"'!B2:B301")),"タブなし"))`,
+      `=IF(A${r}="","",IFERROR(SUM(INDIRECT("'"&A${r}&"'!I2:I301")),""))`,
+      `=IF(A${r}="","",IFERROR(COUNTIF(INDIRECT("'"&A${r}&"'!P2:P301"),"未割り振り"),""))`,
+      `=IF(A${r}="","",IFERROR(COUNTIF(INDIRECT("'"&A${r}&"'!P2:P301"),"納品済"),""))`,
     ]);
   }
   sm.getRange(2, 2, rows.length, 4).setFormulas(rows);
@@ -432,7 +438,7 @@ function setupSummary_() {
     const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
     names.push([Utilities.formatDate(d, CONFIG.TZ, 'yyyyMM')]);
   }
-  sm.getRange(2, 1, names.length, 1).setValues(names).setFontColor('#0000FF');
+  sm.getRange(2, 1, names.length, 1).setNumberFormat('@').setValues(names).setFontColor('#0000FF');
   sm.getRange('G1').setValue('A列のタブ名は編集可(青字)。存在しない月は「タブなし」と表示されます。').setFontColor('#808080');
   sm.setColumnWidths(1, 5, 110);
 }
