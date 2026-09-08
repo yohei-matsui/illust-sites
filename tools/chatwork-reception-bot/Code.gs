@@ -246,6 +246,7 @@ function dispatch_() {
 // 列: A No. | B 依頼日 | C 提出予定日 | D 依頼者 | E 案件名 | F 動画名 | G 動画尺 | H 担当者 | I YouTube URL | J 依頼メッセージ | K 備考 | L ステータス
 function appendCase_(req, requestedAt, link) {
   const sh = monthSheet_(requestedAt);
+  requestedAt = parseJst_(Utilities.formatDate(requestedAt, CONFIG.TZ, 'yyyy/MM/dd') + ' 00:00:00'); // 時刻を落とす
   const n = parseCount_(req.count);
   const colB = sh.getRange(2, 2, sh.getMaxRows() - 1, 1).getValues();
   let row = 2;
@@ -394,12 +395,11 @@ function setupSummary_() {
   for (let i = 0; i < 24; i++) {
     const r = i + 2;
     const rng = (col) => `INDIRECT("'"&A${r}&"'!${col}2:${col}301")`;
+    const exists = `NOT(ISERROR(INDIRECT("'"&A${r}&"'!A1")))`;
+    const cnt = (v) => `=IF(A${r}="","",IF(${exists},COUNTIF(${rng('L')},"${v}"),""))`;
     rows.push([
-      `=IF(A${r}="","",IFERROR(COUNTA(${rng('B')}),"タブなし"))`,
-      `=IF(A${r}="","",IFERROR(COUNTIF(${rng('L')},"未割り振り"),""))`,
-      `=IF(A${r}="","",IFERROR(COUNTIF(${rng('L')},"制作中"),""))`,
-      `=IF(A${r}="","",IFERROR(COUNTIF(${rng('L')},"納品済"),""))`,
-      `=IF(A${r}="","",IFERROR(COUNTIF(${rng('L')},"中止"),""))`,
+      `=IF(A${r}="","",IF(${exists},COUNTA(${rng('B')}),"タブなし"))`,
+      cnt('未割り振り'), cnt('制作中'), cnt('納品済'), cnt('中止'),
     ]);
   }
   sm.getRange(2, 2, rows.length, 5).setFormulas(rows);
