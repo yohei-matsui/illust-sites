@@ -41,26 +41,49 @@ const CONFIG = {
 // ===== メッセージ文面 =====
 function honorific_(caseName) {
   if (!caseName) return 'このたび';
-  return /(さん|様|さま|御中)$/.test(caseName) ? caseName : caseName + 'さま';
+  return /(さん|様|さま|御中)(（[^）]*）|\([^)]*\))?$/.test(caseName) ? caseName : caseName + 'さま';
+}
+
+// 時間帯で挨拶を変える(返信を送る時刻が基準)
+function greeting_(when) {
+  const h = Number(Utilities.formatDate(when || new Date(), CONFIG.TZ, 'H'));
+  if (h >= 5 && h < 11) return 'おはようございます。';
+  if (h >= 11 && h < 17) return 'お世話になっております。';
+  return 'お疲れさまです。';
+}
+
+// 絵文字を7割の確率で付ける
+function bow_() { return Math.random() < 0.7 ? '🙇' : ''; }
+
+// 一次返信 5パターン。前回使ったものは避ける
+const FIRST_REPLY_PATTERNS = [
+  (c) => `${c}のご依頼ありがとうございます。\n納期につきましては、本日〜明日中に追ってご連絡いたします。\n引き続きよろしくお願いいたします`,
+  (c) => `${c}のご依頼、承りました。ありがとうございます。\n納期は本日〜明日中にご連絡いたしますので、少々お待ちください。\nよろしくお願いいたします`,
+  (c) => `${c}の件、ご依頼ありがとうございます。\n内容を確認のうえ、本日〜明日中に納期をお知らせいたします。\n引き続きよろしくお願いいたします`,
+  (c) => `いつもありがとうございます。${c}のご依頼を確認いたしました。\n納期につきましては本日〜明日中に改めてご連絡いたします。\nよろしくお願いいたします`,
+  (c) => `${c}のご依頼ありがとうございます。\n担当にて確認し、本日〜明日中に納期をご連絡いたします。\n今しばらくお待ちください`,
+];
+function pickPattern_() {
+  const props = PropertiesService.getScriptProperties();
+  const last = Number(props.getProperty('LAST_PATTERN') || -1);
+  let idx;
+  do { idx = Math.floor(Math.random() * FIRST_REPLY_PATTERNS.length); } while (idx === last && FIRST_REPLY_PATTERNS.length > 1);
+  props.setProperty('LAST_PATTERN', String(idx));
+  return FIRST_REPLY_PATTERNS[idx];
 }
 function msgFirstReply(toId, toName, caseName) {
-  return `[To:${toId}]${toName}さん\n` +
-    'お世話になっております。\n' +
-    `${honorific_(caseName)}のご依頼ありがとうございます。\n` +
-    '納期につきましては、本日〜明日中に追ってご連絡いたします。\n' +
-    '引き続きよろしくお願いいたします🙇';
+  const body = pickPattern_()(honorific_(caseName));
+  return `[To:${toId}]${toName}さん\n${greeting_()}\n${body}${bow_()}`;
 }
 function msgRevisionReply(toId, toName) {
-  return `[To:${toId}]${toName}さん\n` +
-    'お世話になっております。\n' +
+  return `[To:${toId}]${toName}さん\n${greeting_()}\n` +
     '動画のご確認ありがとうございます。\n' +
-    '内容を確認のうえ、追ってご連絡いたします🙇';
+    `内容を確認のうえ、追ってご連絡いたします${bow_()}`;
 }
 function msgGenericReply(toId, toName) {
-  return `[To:${toId}]${toName}さん\n` +
-    'お世話になっております。\n' +
+  return `[To:${toId}]${toName}さん\n${greeting_()}\n` +
     'ご連絡ありがとうございます。\n' +
-    '内容を確認のうえ、追ってご連絡いたします🙇';
+    `内容を確認のうえ、追ってご連絡いたします${bow_()}`;
 }
 function msgShareGeneric(senderName, link) {
   return `[To:${CONFIG.ID_MORIOKA}]森岡さん\n` +
@@ -449,6 +472,9 @@ function backfillThisMonth() {
 function colLetter_(n) { let s = ''; while (n > 0) { const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - 1) / 26); } return s; }
 
 // ===== 手動テスト用 =====
+function previewReplies() {
+  FIRST_REPLY_PATTERNS.forEach((p, i) => Logger.log(`--- パターン${i + 1}\n[To:xxx]立田 紗穂里さん\n${greeting_()}\n${p(honorific_('橋谷のり子さん'))}🙇`));
+}
 function testParse() {
   const msgs = cwGet_(`/rooms/${CONFIG.ROOM_CLIENT}/messages?force=1`);
   msgs.forEach(m => {
