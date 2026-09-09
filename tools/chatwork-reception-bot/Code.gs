@@ -7,6 +7,8 @@
  *       CW_TOKEN    : 事務アカウントのChatwork APIトークン
  *  3. 関数 setupSheet を実行(マスタ・テンプレート・今月タブ・集計・_bot を作る/揃える)
  *  4. 関数 installTrigger を実行(1分おきに poll が動く)
+ *  5. 一次返信は初期状態ではOFF(台帳起票と担当者反映だけ動く)。開始するときに startReplies を実行。
+ *     止めるときは stopReplies。状態はスクリプトプロパティ BOT_REPLIES(on/off)
  *
  * 動き
  *  - 依頼テンプレ(「□ 案件名」を含む投稿)を検知 → 10〜15分後に一次返信
@@ -259,8 +261,14 @@ function detect_() {
   setLastSeen_(maxT);
 }
 
+// 返信のON/OFF(スクリプトプロパティ BOT_REPLIES)。初期値はOFF。
+function repliesEnabled_() { return PropertiesService.getScriptProperties().getProperty('BOT_REPLIES') === 'on'; }
+function startReplies() { PropertiesService.getScriptProperties().setProperty('BOT_REPLIES', 'on'); Logger.log('一次返信を開始しました(BOT_REPLIES=on)。以後の依頼から返信します'); }
+function stopReplies()  { PropertiesService.getScriptProperties().setProperty('BOT_REPLIES', 'off'); Logger.log('一次返信を停止しました(BOT_REPLIES=off)。台帳への起票と担当者の反映は続きます'); }
+
 function dispatch_() {
   const bot = botSheet_();
+  const enabled = repliesEnabled_();
   const last = bot.getLastRow();
   if (last < 2) return;
   const rows = bot.getRange(2, 1, last - 1, 8).getValues();
@@ -270,6 +278,12 @@ function dispatch_() {
     const messageId = String(r[0]), kind = r[1], payload = JSON.parse(r[6]);
     const link = messageLink_(CONFIG.ROOM_CLIENT, messageId);
     try {
+      if (!enabled) {
+        // 返信OFF中: 依頼だけ台帳に起票し、Chatworkには何も投稿しない。ONにしても過去分をさかのぼって返信はしない
+        if (kind === 'request') appendCase_(payload, new Date(r[2]), link);
+        bot.getRange(i + 2, 8).setValue('skipped(replies off)');
+        return;
+      }
       if (kind === 'request') {
         const rowNo = appendCase_(payload, new Date(r[2]), link);
         cwPost_(CONFIG.ROOM_CLIENT, msgFirstReply(payload.senderId, payload.senderName, payload.caseName));
