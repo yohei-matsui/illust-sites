@@ -6,13 +6,14 @@
  *  2. 「プロジェクトの設定 > スクリプト プロパティ」に下記を登録
  *       CW_TOKEN    : 事務アカウントのChatwork APIトークン
  *  3. 関数 setupSheet を実行(マスタ・テンプレート・今月タブ・集計・_bot を作る/揃える)
- *  4. 関数 installTrigger を実行(1分おきに poll が動く)
+ *  4. 関数 installTrigger を実行(CONFIG.POLL_MINUTES おきに poll が動く。既定は5分)
  *  5. 一次返信は初期状態ではOFF(台帳起票と担当者反映だけ動く)。開始するときに startReplies を実行。
  *     止めるときは stopReplies。状態はスクリプトプロパティ BOT_REPLIES(on/off)
  *
  * 動き
  *  - 依頼テンプレ(「□ 案件名」を含む投稿)を検知 → 10〜15分後に一次返信
- *    (0時〜9時の依頼は 9:00〜9:05 に返信。曜日は問わない)
+ *    (0時〜9時の依頼は 9:00〜9:20 に返信。曜日は問わない)
+ *    ポーリングが5分おきなので、実際の投稿は最大5分ずれます
  *  - 同時に制作グループで森岡さんへ依頼を共有し、案件シートに1行追加
  *  - 事務がToされた投稿は内容で分岐:
  *      修正・確認系      → 依頼者へ定型返信 + 制作グループで森岡さんへ共有
@@ -35,7 +36,8 @@ const CONFIG = {
   REPLY_MIN_MINUTES: 10,
   REPLY_MAX_MINUTES: 15,
   MORNING_HOUR: 9,
-  MORNING_WINDOW_MINUTES: 5,
+  MORNING_WINDOW_MINUTES: 20,  // 朝の返信を9:00〜9:20に散らす(5分おきのポーリングで同時投稿にならないように)
+  POLL_MINUTES: 5,             // トリガーの間隔(分)。変更したら installTrigger を実行し直す
   SHEET_TEMPLATE: 'テンプレート',   // 月別タブの元(非表示)
   SHEET_MASTER: 'マスタ',
   SHEET_SUMMARY: '集計',
@@ -192,7 +194,7 @@ function replyAt_(sendTime) {
     // 9:00〜23:59 の依頼: 10〜15分後(0時をまたいでも待たない)
     return new Date(sent.getTime() + rand(CONFIG.REPLY_MIN_MINUTES, CONFIG.REPLY_MAX_MINUTES) * 60000);
   }
-  // 0:00〜8:59 の依頼: 当日 9:00〜9:05
+  // 0:00〜8:59 の依頼: 当日 9:00〜9:20
   const ymd = Utilities.formatDate(sent, CONFIG.TZ, 'yyyy/MM/dd');
   const base = parseJst_(ymd + ' 09:00:00');
   return new Date(base.getTime() + rand(0, CONFIG.MORNING_WINDOW_MINUTES) * 60000);
@@ -476,7 +478,7 @@ function backfillAssignments() {
 // ===== トリガー =====
 function installTrigger() {
   ScriptApp.getProjectTriggers().forEach(t => { if (t.getHandlerFunction() === 'poll') ScriptApp.deleteTrigger(t); });
-  ScriptApp.newTrigger('poll').timeBased().everyMinutes(1).create();
+  ScriptApp.newTrigger('poll').timeBased().everyMinutes(CONFIG.POLL_MINUTES).create();
 }
 
 // ===== シート構築 =====
