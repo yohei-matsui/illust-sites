@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta name="viewport" content="width=device-width" />
+    <link rel="stylesheet" href="styles.css" />
+    <script src="index.js"></script>
+  </head>
+  <body>
+    <div class="scroll">
+      <div class="header">
+        <sp-heading size="M">ワンポチくん - ホイール -</sp-heading>
+        <div id="conn" class="conn conn-off">Hammerspoon 未接続</div>
+      </div>
+
+      <!-- ON / OFF -->
+      <div class="section">
+        <div class="row space-between">
+          <label class="toggle">
+            <input type="checkbox" id="enabled" />
+            <span>ホイールを有効にする</span>
+          </label>
+          <span id="enabled-state" class="badge">OFF</span>
+        </div>
+      </div>
+
+      <!-- 呼び出し(トリガー) -->
+      <div class="section">
+        <h4>呼び出し方法</h4>
+        <div class="row">
+          <label class="field">
+            <span>キー</span>
+            <select id="trigger-mod">
+              <option value="cmd">⌘ Command</option>
+              <option value="alt">⌥ Option</option>
+              <option value="ctrl">⌃ Control</option>
+              <option value="shift">⇧ Shift</option>
+              <option value="fn">fn</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>回数</span>
+            <select id="trigger-taps">
+              <option value="2">2 回</option>
+              <option value="3">3 回</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>間隔 (秒)</span>
+            <input type="number" id="trigger-interval" min="0.15" max="1" step="0.05" />
+          </label>
+        </div>
+        <div class="hint">
+          例: ⌘ を素早く 2 回押す → マウスの真上にホイールが出る → 8 方向に振る → クリックで発動。
+          もう一度トリガーを押すか Esc、中央クリックでキャンセル。
+        </div>
+      </div>
+
+      <!-- 8 方向の割り当て -->
+      <div class="section">
+        <h4>8 方向の割り当て</h4>
+        <div class="hint">方向を選んで、名前とショートカットキーを登録します。</div>
+        <div class="wheel-grid" id="wheel-grid"></div>
+
+        <div id="slot-editor" class="slot-editor">
+          <div class="row space-between">
+            <strong id="slot-title">方向: 上</strong>
+            <sp-button size="s" variant="secondary" id="slot-clear">この方向をクリア</sp-button>
+          </div>
+          <label class="field wide">
+            <span>表示名</span>
+            <input type="text" id="slot-label" placeholder="例: 編集点を追加" maxlength="24" />
+          </label>
+          <div class="row">
+            <label class="field wide">
+              <span>ショートカットキー</span>
+              <div class="keyrow">
+                <div id="slot-keys" class="keys">未設定</div>
+                <sp-button size="s" id="slot-record">記録</sp-button>
+              </div>
+            </label>
+          </div>
+          <div class="row">
+            <label class="check"><input type="checkbox" class="mod" data-mod="cmd" /> ⌘</label>
+            <label class="check"><input type="checkbox" class="mod" data-mod="shift" /> ⇧</label>
+            <label class="check"><input type="checkbox" class="mod" data-mod="alt" /> ⌥</label>
+            <label class="check"><input type="checkbox" class="mod" data-mod="ctrl" /> ⌃</label>
+            <label class="field">
+              <span>キー</span>
+              <input type="text" id="slot-key" placeholder="k / m / down / delete" />
+            </label>
+          </div>
+          <div class="hint">
+            「記録」を押してからキーを押すと自動で入ります。Premiere に先に取られるキーは、
+            チェックとキー名で手入力してください(キー名は Hammerspoon の表記:
+            a〜z, 0〜9, f1〜f20, return, tab, space, delete, forwarddelete, escape,
+            left/right/up/down, home/end, pageup/pagedown, `-=[]\;',./`)。
+          </div>
+        </div>
+      </div>
+
+      <!-- 見た目 -->
+      <div class="section">
+        <h4>ホイールの見た目</h4>
+        <div class="row">
+          <label class="field">
+            <span>半径 (px)</span>
+            <input type="number" id="wheel-radius" min="60" max="300" step="10" />
+          </label>
+          <label class="field">
+            <span>中央の無効範囲 (px)</span>
+            <input type="number" id="wheel-deadzone" min="10" max="100" step="5" />
+          </label>
+        </div>
+      </div>
+
+      <div class="section footer">
+        <sp-button id="save" variant="cta">保存して Hammerspoon に反映</sp-button>
+        <sp-button id="reload" variant="secondary">Hammerspoon から読み直す</sp-button>
+        <sp-button id="reset" variant="secondary">初期設定に戻す</sp-button>
+        <div id="log" class="log"></div>
+      </div>
+    </div>
+  </body>
+</html>
