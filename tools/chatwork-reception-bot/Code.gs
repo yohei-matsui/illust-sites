@@ -97,6 +97,33 @@ function msgShareGeneric(senderName, link) {
     'ご確認をお願いいたします。\n' +
     `メッセージ: ${link}`;
 }
+// 初稿スケジュールの連絡(依頼者向け) 3パターン
+const SCHEDULE_PATTERNS = [
+  'ご依頼いただいた件のスケジュールについてです。\n下記日時でいかがでしょうか？\nご確認よろしくお願いいたします',
+  'ご依頼いただいた件の初稿スケジュールです。\n下記日時で進めさせていただければと思います。\nご確認よろしくお願いいたします',
+  'お待たせいたしました。ご依頼いただいた件のスケジュールです。\n下記日時でいかがでしょうか？\nご確認のほどよろしくお願いいたします',
+];
+function pickSchedulePattern_() {
+  const props = PropertiesService.getScriptProperties();
+  const last = Number(props.getProperty('LAST_SCHEDULE_PATTERN') || -1);
+  let idx;
+  do { idx = Math.floor(Math.random() * SCHEDULE_PATTERNS.length); } while (idx === last && SCHEDULE_PATTERNS.length > 1);
+  props.setProperty('LAST_SCHEDULE_PATTERN', String(idx));
+  return SCHEDULE_PATTERNS[idx];
+}
+function msgSchedule(p) {
+  return `[rp aid=${p.clientSenderId} to=${CONFIG.ROOM_CLIENT}-${p.clientMessageId}]${p.clientSenderName}さん\n` +
+    `${greeting_()}\n` +
+    `${pickSchedulePattern_()}${bow_()}\n` +
+    `[info][title]${p.requestedMD}ご依頼　${p.caseName || 'ご依頼の件'}${p.count ? '　' + p.count : ''}[/title]\n` +
+    `〜${p.dueMD}\n[/info]`;
+}
+function msgScheduleAmbiguous(reporterName, link) {
+  return `[To:${CONFIG.ID_MORIOKA}]森岡さん\n` +
+    `お疲れさまです。${reporterName}さんのご報告に日付が複数あり、先方提出日を判断できませんでした。\n` +
+    '恐れ入りますが、先方への連絡をお願いいたします。\n' +
+    `メッセージ: ${link}`;
+}
 function msgShareRequest(req, link, rowNo) {
   return `[To:${CONFIG.ID_MORIOKA}]森岡さん\n` +
     'お疲れさまです。新規のご依頼が届きました。\n' +
@@ -106,7 +133,9 @@ function msgShareRequest(req, link, rowNo) {
     `希望納期: ${req.due || '記載なし'}\n` +
     `依頼者: ${req.senderName}さん\n` +
     `依頼メッセージ: ${link}\n` +
-    `案件シート: ${Utilities.formatDate(new Date(), CONFIG.TZ, 'yyyyMM')}タブ No.${rowNo}〜`;
+    `案件シート: ${Utilities.formatDate(new Date(), CONFIG.TZ, 'yyyyMM')}タブ No.${rowNo}〜\n\n` +
+    'この投稿への返信で、担当の方から「先方提出日」をご報告ください(例: 9/14)。\n' +
+    'そのまま依頼者へ初稿スケジュールとしてお伝えします。';
 }
 function msgShareRevision(senderName, link) {
   return `[To:${CONFIG.ID_MORIOKA}]森岡さん\n` +
@@ -283,7 +312,7 @@ function dispatch_() {
       if (!enabled) {
         // 返信OFF中: 依頼だけ台帳に起票し、Chatworkには何も投稿しない。ONにしても過去分をさかのぼって返信はしない
         if (kind === 'request') appendCase_(payload, new Date(r[2]), link);
-        bot.getRange(i + 2, 8).setValue('skipped(replies off)');
+        bot.getRange(i + 2, 8).setValue('skipped(replies off)'); // scheduleは台帳反映済み、投稿のみ見送り
         return;
       }
       if (kind === 'request') {
@@ -302,6 +331,8 @@ function dispatch_() {
       } else if (kind === 'mention') {
         cwPost_(CONFIG.ROOM_CLIENT, msgGenericReply(payload.senderId, payload.senderName));
         cwPost_(CONFIG.ROOM_PROD, msgShareGeneric(payload.senderName, link));
+      } else if (kind === 'schedule') {
+        cwPost_(CONFIG.ROOM_CLIENT, msgSchedule(payload));
       }
       bot.getRange(i + 2, 8).setValue('done');
     } catch (e) {
@@ -357,6 +388,80 @@ function monthSheet_(date) {
   return sh;
 }
 
+// ===== 担当者からの期日報告(制作グループ) =====
+// Botの共有メッセージへの返信に日付が1つあれば、それを「先方提出日」として扱う。
+// 返信した人が担当者になり、台帳に担当者と提出予定日を入れたうえで、依頼者へ初稿スケジュールを送る。
+// 日付が複数あるときは判断せず、森岡さんにメンションして人に任せる。
+function applyScheduleReport_(m) {
+  const reporterId = String(m.account.account_id);
+  const assignee = CONFIG.ASSIGNEES[reporterId];
+  if (!assignee) return false;                     // 社内の担当者以外は対象外
+  const body = stripQuotes_(m.body);
+  const rp = body.match(/\[rp aid=\d+ to=\d+-(\d+)\]/);
+  if (!rp) return false;                           // 共有メッセージへの返信でなければ対象外
+
+  const bot = botSheet_();
+  const last = bot.getLastRow();
+  if (last < 2) return false;
+  const rows = bot.getRange(2, 1, last - 1, 8).getValues();
+  let hit = null;
+  rows.forEach(r => {
+    try { if (JSON.parse(r[6] || '{}').shareMessageId === rp[1]) hit = r; } catch (e) {}
+  });
+  if (!hit) return false;                          // 共有メッセージ以外への返信
+  const p = JSON.parse(hit[6]);
+  if (p.scheduleReported) return true;             // 報告済み(二重処理を防ぐ)
+
+  const sent = new Date(m.send_time * 1000);
+  const dates = findDates_(body, sent);
+  if (!dates.length) return false;                 // 日付がなければ割り振り検知に回す
+  const link = messageLink_(CONFIG.ROOM_PROD, m.message_id);
+  if (dates.length > 1) {                          // 複数あると先方提出日を特定できない
+    if (repliesEnabled_()) cwPost_(CONFIG.ROOM_PROD, msgScheduleAmbiguous(assignee, link));
+    Logger.log('期日報告: 日付が複数のため森岡さんへ引き継ぎ');
+    return true;
+  }
+
+  // 台帳に担当者と先方提出予定日を反映
+  const due = dates[0];
+  findCaseRows_(p.sheetName, p.caseName).forEach(t => {
+    if (t.sheet.getRange(t.row, 8).getValue() === '') t.sheet.getRange(t.row, 8).setValue(assignee);
+    if (t.sheet.getRange(t.row, 3).getValue() === '') t.sheet.getRange(t.row, 3).setValue(ymd_(due)).setNumberFormat('yyyy/mm/dd');
+  });
+
+  // 依頼者への初稿スケジュール連絡を予約
+  const requested = new Date(hit[2]);
+  bot.appendRow([String(m.message_id), 'schedule', sent, replyAt_(m.send_time), reporterId, assignee,
+    JSON.stringify({
+      clientMessageId: String(hit[0]), clientSenderId: p.senderId, clientSenderName: p.senderName,
+      caseName: p.caseName, count: p.count, requestedMD: md_(requested), dueMD: md_(due), reporter: assignee,
+    }), 'pending']);
+  p.scheduleReported = true;
+  rows.forEach((r, i) => { if (r[0] === hit[0]) bot.getRange(i + 2, 7).setValue(JSON.stringify(p)); });
+  Logger.log(`期日報告: ${p.caseName} 担当${assignee} 先方提出${md_(due)}`);
+  return true;
+}
+
+// 本文から日付(M/D・M月D日)を拾う。過去の日付は翌年として扱う
+function findDates_(body, base) {
+  const out = [], seen = {};
+  const re = /(\d{1,2})\s*[\/月]\s*(\d{1,2})日?/g;
+  let mm;
+  while ((mm = re.exec(body)) !== null) {
+    const mo = Number(mm[1]), da = Number(mm[2]);
+    if (mo < 1 || mo > 12 || da < 1 || da > 31) continue;
+    const key = mo + '/' + da;
+    if (seen[key]) continue;
+    seen[key] = true;
+    const y = Number(Utilities.formatDate(base, CONFIG.TZ, 'yyyy'));
+    let d = parseJst_(`${y}/${mo}/${da} 00:00:00`);
+    if (d.getTime() < base.getTime() - 86400000 * 30) d = parseJst_(`${y + 1}/${mo}/${da} 00:00:00`);
+    out.push(d);
+  }
+  return out;
+}
+function md_(d) { return Number(Utilities.formatDate(d, CONFIG.TZ, 'M')) + '/' + Number(Utilities.formatDate(d, CONFIG.TZ, 'd')); }
+
 // ===== 割り振りの自動反映(制作グループ) =====
 // 森岡さん(または松井さん)が制作グループで担当者にToした投稿から、案件名を探して台帳の担当者列を埋める。
 //   例1: 「[To:牛嶋] 橋谷のり子さま案件、お願いします」 → 橋谷のり子さんの行の担当者=牛嶋
@@ -371,7 +476,10 @@ function detectAssignments_() {
   msgs.forEach(m => {
     if (m.send_time <= since) return;
     maxT = Math.max(maxT, m.send_time);
-    try { applyAssignment_(m); } catch (e) { Logger.log('assignment error: ' + e.message); }
+    try {
+      // 共有メッセージへの返信で先方提出日が報告されていれば、それを優先して処理する
+      if (!applyScheduleReport_(m)) applyAssignment_(m);
+    } catch (e) { Logger.log('assignment error: ' + e.message); }
   });
   props.setProperty('LAST_SEEN_PROD', String(maxT));
 }
