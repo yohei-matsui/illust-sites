@@ -9,6 +9,8 @@
  *  4. 関数 installTrigger を実行(CONFIG.POLL_MINUTES おきに poll が動く。既定は5分)
  *  5. 一次返信は初期状態ではOFF(台帳起票と担当者反映だけ動く)。開始するときに startReplies を実行。
  *     止めるときは stopReplies。状態はスクリプトプロパティ BOT_REPLIES(on/off)
+ *  6. 提出予定日のリマインドも初期状態ではOFF。開始は startReminders、停止は stopReminders。
+ *     状態はスクリプトプロパティ BOT_REMINDERS(on/off)
  *
  * 動き
  *  - 依頼テンプレ(「□ 案件名」を含む投稿)を検知 → 10〜15分後に一次返信
@@ -38,6 +40,7 @@ const CONFIG = {
   MORNING_HOUR: 9,
   MORNING_WINDOW_MINUTES: 20,  // 朝の返信を9:00〜9:20に散らす(5分おきのポーリングで同時投稿にならないように)
   POLL_MINUTES: 5,             // トリガーの間隔(分)。変更したら installTrigger を実行し直す
+  REMIND_HOUR: 12,             // 提出予定日のリマインドを送る時刻(正午)
   SHEET_TEMPLATE: 'テンプレート',   // 月別タブの元(非表示)
   SHEET_MASTER: 'マスタ',
   SHEET_SUMMARY: '集計',
@@ -265,6 +268,7 @@ function poll() {
     detect_();
     dispatch_();
     detectAssignments_();
+    remindDue_();
   } finally { lock.releaseLock(); }
 }
 
@@ -386,6 +390,84 @@ function monthSheet_(date) {
   ss.setActiveSheet(sh); ss.moveActiveSheet(1);
   sh.showSheet();
   return sh;
+}
+
+// ===== 提出予定日のリマインド(制作グループ) =====
+// 毎日 正午 に、担当者ごとにToを分けて制作グループへ投稿する。
+// 「本日が先方提出日」と「明日が先方提出日」の案件を、担当者本人にだけ知らせる。
+// YouTube URL が入っている行(納品済)と、担当者が空の行は対象外。
+// リマインドは BOT_REMINDERS(on/off)で切り替える。初期値はOFF。
+function remindersEnabled_() { return PropertiesService.getScriptProperties().getProperty('BOT_REMINDERS') === 'on'; }
+function startReminders() { PropertiesService.getScriptProperties().setProperty('BOT_REMINDERS', 'on'); Logger.log('提出日リマインドを開始しました(BOT_REMINDERS=on)'); }
+function stopReminders()  { PropertiesService.getScriptProperties().setProperty('BOT_REMINDERS', 'off'); Logger.log('提出日リマインドを停止しました(BOT_REMINDERS=off)'); }
+
+function remindDue_() {
+  if (!remindersEnabled_()) return;
+  const props = PropertiesService.getScriptProperties();
+  const now = new Date();
+  const today = ymd_(now);
+  if (props.getProperty('LAST_REMIND_DATE') === today) return;              // 今日はもう送った
+  if (Number(Utilities.formatDate(now, CONFIG.TZ, 'H')) < CONFIG.REMIND_HOUR) return; // 正午前
+  props.setProperty('LAST_REMIND_DATE', today);                            // 先に記録して二重送信を防ぐ
+  const msgs = buildReminders_(now);
+  let sent = 0;
+  Object.keys(msgs).forEach(id => {
+    try { cwPost_(CONFIG.ROOM_PROD, msgs[id]); sent++; }
+    catch (e) { Logger.log(`リマインド送信に失敗(${CONFIG.ASSIGNEES[id]}): ${e.message}`); }
+  });
+  Logger.log(`提出日リマインド: ${sent}/${Object.keys(msgs).length}名へ送信`);
+}
+
+// 担当者のアカウントID別に、リマインド文面を組み立てる
+function buildReminders_(now) {
+  const ss = SpreadsheetApp.getActive();
+  const today = ymd_(now);
+  const tomorrow = ymd_(new Date(now.getTime() + 86400000));
+  const byId = {};   // accountId -> {today:[], tomorrow:[]}
+  const nameToId = {};
+  Object.keys(CONFIG.ASSIGNEES).forEach(id => { nameToId[CONFIG.ASSIGNEES[id]] = id; });
+
+  const cur = Utilities.formatDate(now, CONFIG.TZ, 'yyyyMM');
+  [cur, prevMonthName_(cur)].map(n => ss.getSheetByName(n)).filter(Boolean).forEach(sh => {
+    const lastRow = sh.getLastRow();
+    if (lastRow < 2) return;
+    const vals = sh.getRange(2, 2, lastRow - 1, 8).getValues();  // B..I
+    vals.forEach(v => {
+      const [reqDate, due, , caseName, , , assignee, url] = v;   // B,C,D,E,F,G,H,I
+      if (reqDate === '' || url !== '' || assignee === '') return;
+      if (!(due instanceof Date)) return;                        // 「中止」や空欄は対象外
+      const d = ymd_(due);
+      const when = d === today ? 'today' : (d === tomorrow ? 'tomorrow' : null);
+      if (!when) return;
+      const id = nameToId[assignee];
+      if (!id) return;                                           // マスタ外の担当者名は対象外
+      if (!byId[id]) byId[id] = { today: {}, tomorrow: {} };
+      const key = caseName || '(案件名未記載)';
+      byId[id][when][key] = (byId[id][when][key] || 0) + 1;
+    });
+  });
+
+  const out = {};
+  Object.keys(byId).forEach(id => {
+    const g = byId[id];
+    const lines = [];
+    const list = (obj) => Object.keys(obj).map(k => `・${k} ${obj[k]}本`).join('\n');
+    if (Object.keys(g.today).length) lines.push('【本日が先方提出日】\n' + list(g.today));
+    if (Object.keys(g.tomorrow).length) lines.push('【明日が先方提出日】\n' + list(g.tomorrow));
+    if (!lines.length) return;
+    out[id] = `[To:${id}]${CONFIG.ASSIGNEES[id]}さん\nお疲れさまです。\n` +
+      lines.join('\n\n') + '\n\n' +
+      `提出済みでしたら、この投稿は読み飛ばしてください${bow_()}`;
+  });
+  return out;
+}
+
+// テスト用: いま送るとどうなるかをログに出す(投稿しない)
+function previewReminders() {
+  const msgs = buildReminders_(new Date());
+  const ids = Object.keys(msgs);
+  if (!ids.length) { Logger.log('対象の案件はありません'); return; }
+  ids.forEach(id => Logger.log('---\n' + msgs[id]));
 }
 
 // ===== 担当者からの期日報告(制作グループ) =====
