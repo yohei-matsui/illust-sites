@@ -301,6 +301,46 @@ function detect_() {
 
 // 返信のON/OFF(スクリプトプロパティ BOT_REPLIES)。初期値はOFF。
 function repliesEnabled_() { return PropertiesService.getScriptProperties().getProperty('BOT_REPLIES') === 'on'; }
+// いまBotがどう動いているかを1回で確認する
+function showStatus() {
+  const props = PropertiesService.getScriptProperties();
+  const fmt = (k) => {
+    const v = props.getProperty(k);
+    return v ? Utilities.formatDate(new Date(Number(v) * 1000), CONFIG.TZ, 'yyyy/MM/dd HH:mm') : '(未設定)';
+  };
+  const out = ['=== Bot の状態 ' + Utilities.formatDate(new Date(), CONFIG.TZ, 'yyyy/MM/dd HH:mm') + ' ==='];
+
+  out.push('[返信] 一次返信: ' + (repliesEnabled_() ? 'ON(依頼者へ投稿します)' : 'OFF(台帳更新のみ)'));
+  out.push('[返信] 提出日リマインド: ' + (remindersEnabled_() ? 'ON' : 'OFF'));
+
+  const trg = ScriptApp.getProjectTriggers().filter(t => t.getHandlerFunction() === 'poll');
+  out.push('[起動] poll のトリガー: ' + (trg.length ? `${trg.length}件 登録済み(設定は${CONFIG.POLL_MINUTES}分おき)` : '未登録(installTrigger を実行してください)'));
+
+  out.push('[既読] TendAiルーム(依頼): ' + fmt('LAST_SEEN'));
+  out.push('[既読] 制作グループ(割り振り): ' + fmt('LAST_SEEN_PROD'));
+  out.push('[既読] 制作グループ(提出): ' + fmt('LAST_SEEN_SUBMIT'));
+  out.push('[既読] TendAiルーム(納品): ' + fmt('LAST_SEEN_DELIVERY'));
+  out.push('[既読] 最後にリマインドした日: ' + (props.getProperty('LAST_REMIND_DATE') || '(まだ送っていません)'));
+
+  const bot = botSheet_();
+  const last = bot.getLastRow();
+  let pending = 0, err = 0;
+  if (last >= 2) {
+    bot.getRange(2, 8, last - 1, 1).getValues().forEach(r => {
+      if (r[0] === 'pending') pending++;
+      if (String(r[0]).indexOf('error') === 0) err++;
+    });
+  }
+  out.push(`[予約] 未送信 ${pending}件 / エラー ${err}件 / 履歴 ${Math.max(last - 1, 0)}件`);
+
+  const name = Utilities.formatDate(new Date(), CONFIG.TZ, 'yyyyMM');
+  const sh = SpreadsheetApp.getActive().getSheetByName(name);
+  out.push(`[台帳] ${name}タブ: ` + (sh ? `${Math.max(sh.getLastRow() - 1, 0)}行` : '未作成'));
+  out.push('[動画尺] YouTube Data API: ' + (typeof YouTube === 'undefined' ? '未有効' : '有効'));
+
+  Logger.log(out.join('\n'));
+}
+
 // 本番投入の直前に実行する。既読位置を「いま」に揃え、未処理の予約を破棄する。
 // これをしないと、前回Botが動いたとき以降の古い依頼に今さら返信してしまう可能性がある。
 function resetCursors() {
