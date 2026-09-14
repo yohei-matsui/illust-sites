@@ -28,9 +28,9 @@
 const CONFIG = {
   ROOM_CLIENT: '367205288',      // 株式会社TendAi×松井くんチーム
   ROOM_PROD: '407016240',        // 【制作】株式会社TendAi様
-  ID_SELF: '11316015',           // 有流悟 理澄 -事務-
+  ID_SELF: '11316015',           // 受付アカウント(相宮 美桜。旧「有流悟 理澄 -事務-」と同一)
   ID_MORIOKA: '10003938',        // 森岡 奈々
-  INTERNAL_IDS: ['11316015', '10003938', '7433976', '11286789'], // 事務・森岡・松井・牛嶋
+  INTERNAL_IDS: ['11316015', '10003938', '7433976', '11286789'], // 相宮(受付)・森岡・松井・牛嶋
   ASSIGNEES: { '10003938': '森岡', '11286789': '牛嶋', '7433976': '松井' }, // アカウントID → 台帳の担当者名
   ASSIGNERS: ['10003938', '7433976'],  // 割り振りを決められる人(森岡・松井)
   SHARE_MAIL: 'ushikun1130@gmail.com',
@@ -269,6 +269,7 @@ function poll() {
     dispatch_();
     detectAssignments_();
     detectSubmissions_();
+    detectDeliveries_();
     remindDue_();
   } finally { lock.releaseLock(); }
 }
@@ -567,6 +568,95 @@ function backfillSubmissions() {
     try { if (applySubmission_(m)) n++; } catch (e) { Logger.log(e.message); }
   });
   Logger.log(`${n}件の提出を台帳に反映しました`);
+}
+
+// ===== 客先納品の検知(TendAiルーム) =====
+// 「初稿ご確認のお願い / 修正稿ご確認のお願い」を読み取り、台帳のURLと動画尺を更新する。
+// 森岡さんのように制作グループを通さず直接納品する場合も、これで台帳が最新になる。
+// 制作グループの提出検知と両方が動いた場合は、後から処理されたほう(時系列で新しいほう)が残る。
+function detectDeliveries_() {
+  const props = PropertiesService.getScriptProperties();
+  let since = Number(props.getProperty('LAST_SEEN_DELIVERY') || 0);
+  if (!since) { since = Math.floor(Date.now() / 1000); props.setProperty('LAST_SEEN_DELIVERY', String(since)); return; }
+  const msgs = cwGet_(`/rooms/${CONFIG.ROOM_CLIENT}/messages?force=1`);
+  let maxT = since;
+  msgs.forEach(m => {
+    if (m.send_time <= since) return;
+    maxT = Math.max(maxT, m.send_time);
+    try { applyDelivery_(m); } catch (e) { Logger.log('delivery error: ' + e.message); }
+  });
+  props.setProperty('LAST_SEEN_DELIVERY', String(maxT));
+}
+
+function applyDelivery_(m) {
+  if (!CONFIG.INTERNAL_IDS.includes(String(m.account.account_id))) return false;  // 社内からの納品のみ
+  const d = parseDelivery_(stripQuotes_(m.body));
+  if (!d) return false;
+  const when = new Date(m.send_time * 1000);
+  let n = 0;
+  d.items.forEach(item => {
+    const t = findRowForSubmission_({ caseName: d.caseName, title: item.title }, when);
+    if (!t) { Logger.log(`納品検知: 該当行なし(${d.caseName} / ${item.title || '(タイトルなし)'})`); return; }
+    t.sheet.getRange(t.row, 9).setValue(item.url);
+    if (item.title && t.sheet.getRange(t.row, 6).getValue() !== item.title) t.sheet.getRange(t.row, 6).setValue(item.title);
+    const len = videoLengthTier_(item.url);
+    if (len) t.sheet.getRange(t.row, 7).setValue(len);
+    n++;
+  });
+  if (n) Logger.log(`納品検知: ${d.kind} ${d.caseName} ${n}本を更新`);
+  return n > 0;
+}
+
+// Chatworkの装飾タグを外す(改行は残す)
+function stripTags_(body) {
+  return body.replace(/\[(?:hr|info|\/info|code|\/code|title|\/title|dtext:[^\]]*|preview[^\]]*|download:[^\]]*|\/download)\]/g, '\n')
+             .replace(/\[[^\]\n]{0,80}\]/g, '');
+}
+
+// 納品メッセージを解析する。納品でなければ null
+//   [code]修正稿ご確認のお願い / 8/14ご依頼　ACTION4さま[/code]
+//   01｜無償活動を…        ← タイトル
+//   https://youtube.com/shorts/xxxx
+function parseDelivery_(body) {
+  const kind = body.match(/(初稿|修正稿|再修正稿)ご確認のお願い/);
+  if (!kind) return null;
+  const text = stripTags_(body);
+  const cm = text.match(/\d{1,2}\s*[\/月]\s*\d{1,2}[^\n]*?ご依頼[\s　]*([^\n]+)/);
+  if (!cm) return null;
+  const caseName = cm[1].trim();
+
+  const lines = text.split('\n').map(x => x.trim());
+  const YT = /https?:\/\/(?:www\.)?(?:youtube\.com\/shorts\/|youtu\.be\/|youtube\.com\/watch\?v=)[A-Za-z0-9_?=&.\-]+/;
+  const items = [];
+  for (let i = 0; i < lines.length; i++) {
+    const um = lines[i].match(YT);
+    if (!um) continue;
+    let title = '';
+    for (let j = i - 1; j >= 0 && j >= i - 3; j--) {           // 直前の数行からタイトルを探す
+      const c = lines[j];
+      if (c === '' || YT.test(c)) continue;
+      if (isBoilerplate_(c)) break;                            // 挨拶・定型文はタイトルにしない
+      title = c; break;
+    }
+    title = title.replace(/^[①②③④⑤⑥⑦⑧⑨⑩]\s*/, '').replace(/^\d+[\.\)、｜|]\s*/, '').trim();
+    items.push({ title: title, url: um[0].split('?')[0] });
+  }
+  if (!items.length) return null;
+  return { kind: kind[1], caseName: caseName, items: items };
+}
+
+function isBoilerplate_(line) {
+  if (line.length > 60) return true;
+  return /お世話になっ|よろしくお願い|ご確認のほど|お待たせ|上記の件|ありがとうござ|となります|いたします|ご依頼|ご確認のお願い/.test(line);
+}
+
+// テスト用: TendAiルームの過去の納品を台帳に反映する(投稿なし)
+function backfillDeliveries() {
+  let n = 0;
+  cwGet_(`/rooms/${CONFIG.ROOM_CLIENT}/messages?force=1`).forEach(m => {
+    try { if (applyDelivery_(m)) n++; } catch (e) { Logger.log(e.message); }
+  });
+  Logger.log(`${n}通の納品メッセージを台帳に反映しました`);
 }
 
 // ===== 提出予定日のリマインド(制作グループ) =====
