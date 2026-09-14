@@ -415,7 +415,7 @@ function monthSheet_(date) {
 // ===== 提出の検知(制作グループ) =====
 // 担当者の「(F)初稿提出 / (F)修正稿提出」を読み取り、台帳のYouTube URLを常に最新に保つ。
 // 修正稿が出るたびに上書きするので、シートのURLは必ず最新版を指す。
-// 動画尺はYouTubeの内部API(InnerTube)で実尺を取得し、マスタの区分に切り上げて入れる。APIキー・設定は不要。
+// 動画尺は YouTube Data API v3(拡張サービス)で実尺を取得し、マスタの区分に切り上げて入れる。
 //
 // 対応する書式(牛嶋さんの実際の投稿):
 //   (F)初稿提出        (F)修正稿提出
@@ -528,13 +528,14 @@ function videoLengthTier_(url) {
 }
 
 // 動画の尺(秒)を取得する。取れなければ 0
-// YouTubeの内部API(InnerTube)のWEBクライアントに問い合わせる。APIキー不要・クォータ消費なし。
-// 限定公開の動画でも videoDetails.lengthSeconds が返る(再生は不可でも尺は読める)。
-// 万一この方法が使えなくなった場合に備え、YouTube Data API の拡張サービスが有効ならそちらも試す。
+// 主経路は YouTube Data API v3(拡張サービス)。スプレッドシート所有者の権限で読むため、
+// 限定公開の動画でも確実に取得できる。videos.list は1本あたり1単位で、無料枠は1日10,000単位。
+//   有効化: エディタ左メニュー「サービス」→ YouTube Data API v3 を追加(識別子は YouTube のまま)
+// 予備として内部API(InnerTube)も試すが、限定公開では弾かれることが多く当てにはできない。
 function youtubeDurationSec_(url) {
   const m = url.match(/(?:shorts\/|youtu\.be\/|v=)([A-Za-z0-9_-]{6,})/);
   if (!m) return 0;
-  return innertubeDurationSec_(m[1]) || dataApiDurationSec_(m[1]);
+  return dataApiDurationSec_(m[1]) || innertubeDurationSec_(m[1]);
 }
 
 function innertubeDurationSec_(videoId) {
@@ -560,10 +561,13 @@ function innertubeDurationSec_(videoId) {
   }
 }
 
-// 予備の経路。拡張サービス「YouTube Data API v3」が有効なときだけ動く
+// 主経路。拡張サービス「YouTube Data API v3」が有効なときだけ動く
 function dataApiDurationSec_(videoId) {
   try {
-    if (typeof YouTube === 'undefined') return 0;
+    if (typeof YouTube === 'undefined') {
+      Logger.log('動画尺: YouTube Data API v3 が未有効です(エディタ左「サービス」から追加してください)');
+      return 0;
+    }
     const res = YouTube.Videos.list('contentDetails', { id: videoId });
     if (!res || !res.items || !res.items.length) return 0;
     const p = String(res.items[0].contentDetails.duration).match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?/);
