@@ -548,9 +548,11 @@ function innertubeDurationSec_(videoId) {
       }),
       muteHttpExceptions: true,
     });
-    if (res.getResponseCode() >= 300) return 0;
+    const code = res.getResponseCode();
+    if (code >= 300) { Logger.log(`動画尺の取得に失敗(InnerTube HTTP ${code})`); return 0; }
     const d = JSON.parse(res.getContentText());
     const sec = Number(((d.videoDetails || {}).lengthSeconds) || 0);
+    if (!sec) Logger.log(`動画尺が取れず(InnerTube status=${((d.playabilityStatus || {}).status) || '不明'})`);
     return sec > 0 ? sec : 0;
   } catch (e) {
     Logger.log('動画尺の取得に失敗(InnerTube): ' + e.message);
@@ -571,6 +573,54 @@ function dataApiDurationSec_(videoId) {
     Logger.log('動画尺の取得に失敗(Data API): ' + e.message);
     return 0;
   }
+}
+
+// 診断用: 動画尺が入らないときに、どこで失敗しているかを1回で確かめる
+function diagnoseVideoLength(url) {
+  const u = url || 'https://youtube.com/shorts/YstsoLETxuE';
+  const id = (u.match(/(?:shorts\/|youtu\.be\/|v=)([A-Za-z0-9_-]{6,})/) || [])[1];
+  const out = ['診断対象: ' + u, 'videoId: ' + (id || '(抽出できず)')];
+
+  // 1) InnerTube
+  try {
+    const res = UrlFetchApp.fetch('https://www.youtube.com/youtubei/v1/player', {
+      method: 'post', contentType: 'application/json',
+      payload: JSON.stringify({ context: { client: { clientName: 'WEB', clientVersion: '2.20240726.00.00', hl: 'ja', gl: 'JP' } }, videoId: id }),
+      muteHttpExceptions: true,
+    });
+    const code = res.getResponseCode();
+    const body = res.getContentText();
+    out.push(`[1] InnerTube HTTP ${code} / 応答 ${body.length}バイト`);
+    if (code < 300) {
+      const d = JSON.parse(body);
+      out.push(`    playabilityStatus: ${((d.playabilityStatus || {}).status) || '(なし)'}`);
+      out.push(`    lengthSeconds: ${((d.videoDetails || {}).lengthSeconds) || '(なし)'}`);
+      out.push(`    title: ${((d.videoDetails || {}).title) || '(なし)'}`);
+    } else {
+      out.push('    応答の冒頭: ' + body.slice(0, 200).replace(/\n/g, ' '));
+    }
+  } catch (e) { out.push('[1] InnerTube 例外: ' + e.message); }
+
+  // 2) YouTube Data API(拡張サービス)
+  if (typeof YouTube === 'undefined') {
+    out.push('[2] YouTube Data API: 拡張サービスが未有効(エディタ左「サービス」から YouTube Data API v3 を追加すると使えます)');
+  } else {
+    try {
+      const r = YouTube.Videos.list('contentDetails', { id: id });
+      out.push(`[2] YouTube Data API: ${r && r.items && r.items.length ? r.items[0].contentDetails.duration : '該当なし'}`);
+    } catch (e) { out.push('[2] YouTube Data API 例外: ' + e.message); }
+  }
+
+  // 3) マスタの動画尺一覧
+  const ms = SpreadsheetApp.getActive().getSheetByName(CONFIG.SHEET_MASTER);
+  if (!ms) out.push('[3] マスタシートが見つかりません');
+  else {
+    const t = ms.getRange(2, 3, 30, 1).getValues().map(x => String(x[0] || '')).filter(x => /\d/.test(x));
+    out.push(`[3] マスタの動画尺(C列): ${t.length ? t.join(' / ') : '(空。C列に「〜60秒」などを入れてください)'}`);
+  }
+
+  out.push(`[4] 最終結果: 実尺 ${youtubeDurationSec_(u)}秒 / 区分 ${videoLengthTier_(u) || '(なし)'}`);
+  Logger.log(out.join('\n'));
 }
 
 // テスト用: URLを渡すと尺と区分をログに出す
