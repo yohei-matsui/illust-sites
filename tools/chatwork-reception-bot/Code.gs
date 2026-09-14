@@ -268,6 +268,7 @@ function poll() {
     detect_();
     dispatch_();
     detectAssignments_();
+    detectSubmissions_();
     remindDue_();
   } finally { lock.releaseLock(); }
 }
@@ -390,6 +391,148 @@ function monthSheet_(date) {
   ss.setActiveSheet(sh); ss.moveActiveSheet(1);
   sh.showSheet();
   return sh;
+}
+
+// ===== 提出の検知(制作グループ) =====
+// 担当者の「(F)初稿提出 / (F)修正稿提出」を読み取り、台帳のYouTube URLを常に最新に保つ。
+// 修正稿が出るたびに上書きするので、シートのURLは必ず最新版を指す。
+// 動画尺はYouTube Data APIで実尺を取得し、マスタの区分に切り上げて入れる(APIが使えないときはURLのみ更新)。
+//
+// 対応する書式(牛嶋さんの実際の投稿):
+//   (F)初稿提出        (F)修正稿提出
+//   □橋谷のり子さん     □坂本桃太郎さん
+//   ① 年齢・今さら不安   初心者・未経験軸
+//   https://youtube.com/shorts/xxxx
+//   □動画データ         □ プロマネ / □ 動画データ
+//   https://gigafile...
+function detectSubmissions_() {
+  // detectAssignments_ と同じ取得結果を使い回せないため、ここでは専用の既読位置を持つ
+  const props = PropertiesService.getScriptProperties();
+  let since = Number(props.getProperty('LAST_SEEN_SUBMIT') || 0);
+  if (!since) { since = Math.floor(Date.now() / 1000); props.setProperty('LAST_SEEN_SUBMIT', String(since)); return; }
+  const msgs = cwGet_(`/rooms/${CONFIG.ROOM_PROD}/messages?force=1`);
+  let maxT = since;
+  msgs.forEach(m => {
+    if (m.send_time <= since) return;
+    maxT = Math.max(maxT, m.send_time);
+    try { applySubmission_(m); } catch (e) { Logger.log('submission error: ' + e.message); }
+  });
+  props.setProperty('LAST_SEEN_SUBMIT', String(maxT));
+}
+
+function applySubmission_(m) {
+  const sub = parseSubmission_(stripQuotes_(m.body));
+  if (!sub) return false;
+  const t = findRowForSubmission_(sub, new Date(m.send_time * 1000));
+  if (!t) { Logger.log(`提出検知: 台帳に該当行なし(${sub.caseName} / ${sub.title})`); return false; }
+
+  t.sheet.getRange(t.row, 9).setValue(sub.url);              // I: YouTube URL を常に最新へ
+  if (sub.title && t.sheet.getRange(t.row, 6).getValue() !== sub.title) {
+    t.sheet.getRange(t.row, 6).setValue(sub.title);          // F: 動画名を実際のタイトルに合わせる
+  }
+  const len = videoLengthTier_(sub.url);
+  if (len) t.sheet.getRange(t.row, 7).setValue(len);         // G: 動画尺(区分)
+
+  Logger.log(`提出検知: ${sub.kind} ${sub.caseName} / ${sub.title} -> ${t.sheetName}行${t.row}${len ? ' 尺' + len : ''}`);
+  return true;
+}
+
+// 提出メッセージを解析する。提出でなければ null
+function parseSubmission_(body) {
+  const kind = body.match(/\(F\)\s*(初稿|修正稿|再修正稿)\s*提出/);
+  if (!kind) return null;
+  const url = body.match(/https?:\/\/(?:youtube\.com\/shorts\/|youtu\.be\/|www\.youtube\.com\/watch\?v=)([A-Za-z0-9_-]{6,})/);
+  if (!url) return null;
+  const lines = body.split('\n').map(x => x.trim()).filter(x => x !== '');
+  let caseName = '', title = '', seenCase = false;
+  for (const line of lines) {
+    if (/\(F\)/.test(line)) continue;
+    if (/^□/.test(line)) {
+      const v = line.replace(/^□\s*/, '').trim();
+      if (!seenCase) {
+        // 「□LIA起業塾 縦型＿１」のように案件名とタイトルが同じ行のことがある
+        const sp = v.split(/[\s　]+/);
+        caseName = sp[0];
+        if (sp.length > 1) title = sp.slice(1).join(' ');
+        seenCase = true;
+      }
+      continue;                                   // □動画データ / □プロマネ は読み飛ばす
+    }
+    if (/^https?:\/\//.test(line)) continue;
+    if (seenCase && !title) title = line;         // 案件名とURLの間の行がタイトル
+  }
+  if (!caseName) return null;
+  title = title.replace(/^[①②③④⑤⑥⑦⑧⑨⑩]\s*/, '').replace(/^\d+[\.\)、]\s*/, '').trim();
+  return { kind: kind[1], caseName: caseName, title: title, url: url[0], videoId: url[1] };
+}
+
+// 提出に対応する台帳の行を探す。見つからなければ、その案件の未提出行に割り当てる
+function findRowForSubmission_(sub, when) {
+  const ss = SpreadsheetApp.getActive();
+  const cur = Utilities.formatDate(when, CONFIG.TZ, 'yyyyMM');
+  const key = normCase_(sub.caseName);
+  const titleKey = normCase_(sub.title);
+  const sheets = [cur, prevMonthName_(cur)].map(n => ({ name: n, sh: ss.getSheetByName(n) })).filter(x => x.sh);
+
+  let placeholder = null;
+  for (const { name, sh } of sheets) {
+    const lastRow = sh.getLastRow();
+    if (lastRow < 2) continue;
+    const vals = sh.getRange(2, 2, lastRow - 1, 8).getValues();   // B..I
+    for (let i = 0; i < vals.length; i++) {
+      const v = vals[i];
+      if (v[0] === '') continue;
+      if (normCase_(v[3]) !== key) continue;                      // E 案件名が一致するか
+      const vname = String(v[4] || '');
+      // 1) 動画名が提出のタイトルと一致(修正稿はここで同じ行に戻る)
+      if (titleKey && normCase_(vname) === titleKey) return { sheet: sh, row: i + 2, sheetName: name };
+      // 2) 仮の動画名(動画1など)でURL未入力の行を、初稿の割り当て先として控えておく
+      if (!placeholder && v[7] === '' && /^動画\d*$/.test(vname)) placeholder = { sheet: sh, row: i + 2, sheetName: name };
+    }
+  }
+  return placeholder;
+}
+
+// YouTubeの実尺を取得し、マスタの動画尺区分に切り上げる。取得できなければ空文字
+function videoLengthTier_(url) {
+  const sec = youtubeDurationSec_(url);
+  if (!sec) return '';
+  const ms = SpreadsheetApp.getActive().getSheetByName(CONFIG.SHEET_MASTER);
+  if (!ms) return '';
+  const tiers = ms.getRange(2, 3, 30, 1).getValues()
+    .map(r => String(r[0] || ''))
+    .filter(x => /\d/.test(x))
+    .map(x => ({ label: x, sec: Number(x.replace(/[^\d]/g, '')) }))
+    .sort((a, b) => a.sec - b.sec);
+  for (const t of tiers) if (sec <= t.sec) return t.label;
+  return tiers.length ? tiers[tiers.length - 1].label : '';
+}
+
+// YouTube Data API で尺(秒)を取得する。サービス未有効・非公開などで取れなければ 0
+function youtubeDurationSec_(url) {
+  const m = url.match(/(?:shorts\/|youtu\.be\/|v=)([A-Za-z0-9_-]{6,})/);
+  if (!m) return 0;
+  try {
+    if (typeof YouTube === 'undefined') return 0;              // 拡張サービス未有効
+    const res = YouTube.Videos.list('contentDetails', { id: m[1] });
+    if (!res || !res.items || !res.items.length) return 0;
+    const d = res.items[0].contentDetails.duration;            // ISO8601 例: PT1M23S
+    const p = d.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?/);
+    if (!p) return 0;
+    return Math.ceil((Number(p[1] || 0) * 3600) + (Number(p[2] || 0) * 60) + Number(p[3] || 0));
+  } catch (e) {
+    Logger.log('動画尺の取得に失敗(URLのみ更新します): ' + e.message);
+    return 0;
+  }
+}
+
+// テスト用: 制作グループの過去の提出を台帳に反映する(投稿なし)
+function backfillSubmissions() {
+  let n = 0;
+  cwGet_(`/rooms/${CONFIG.ROOM_PROD}/messages?force=1`).forEach(m => {
+    try { if (applySubmission_(m)) n++; } catch (e) { Logger.log(e.message); }
+  });
+  Logger.log(`${n}件の提出を台帳に反映しました`);
 }
 
 // ===== 提出予定日のリマインド(制作グループ) =====
