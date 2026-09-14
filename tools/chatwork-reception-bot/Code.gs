@@ -396,7 +396,7 @@ function monthSheet_(date) {
 // ===== 提出の検知(制作グループ) =====
 // 担当者の「(F)初稿提出 / (F)修正稿提出」を読み取り、台帳のYouTube URLを常に最新に保つ。
 // 修正稿が出るたびに上書きするので、シートのURLは必ず最新版を指す。
-// 動画尺はYouTube Data APIで実尺を取得し、マスタの区分に切り上げて入れる(APIが使えないときはURLのみ更新)。
+// 動画尺はYouTubeの内部API(InnerTube)で実尺を取得し、マスタの区分に切り上げて入れる。APIキー・設定は不要。
 //
 // 対応する書式(牛嶋さんの実際の投稿):
 //   (F)初稿提出        (F)修正稿提出
@@ -508,22 +508,56 @@ function videoLengthTier_(url) {
   return tiers.length ? tiers[tiers.length - 1].label : '';
 }
 
-// YouTube Data API で尺(秒)を取得する。サービス未有効・非公開などで取れなければ 0
+// 動画の尺(秒)を取得する。取れなければ 0
+// YouTubeの内部API(InnerTube)のWEBクライアントに問い合わせる。APIキー不要・クォータ消費なし。
+// 限定公開の動画でも videoDetails.lengthSeconds が返る(再生は不可でも尺は読める)。
+// 万一この方法が使えなくなった場合に備え、YouTube Data API の拡張サービスが有効ならそちらも試す。
 function youtubeDurationSec_(url) {
   const m = url.match(/(?:shorts\/|youtu\.be\/|v=)([A-Za-z0-9_-]{6,})/);
   if (!m) return 0;
+  return innertubeDurationSec_(m[1]) || dataApiDurationSec_(m[1]);
+}
+
+function innertubeDurationSec_(videoId) {
   try {
-    if (typeof YouTube === 'undefined') return 0;              // 拡張サービス未有効
-    const res = YouTube.Videos.list('contentDetails', { id: m[1] });
+    const res = UrlFetchApp.fetch('https://www.youtube.com/youtubei/v1/player', {
+      method: 'post',
+      contentType: 'application/json',
+      payload: JSON.stringify({
+        context: { client: { clientName: 'WEB', clientVersion: '2.20240726.00.00', hl: 'ja', gl: 'JP' } },
+        videoId: videoId,
+      }),
+      muteHttpExceptions: true,
+    });
+    if (res.getResponseCode() >= 300) return 0;
+    const d = JSON.parse(res.getContentText());
+    const sec = Number(((d.videoDetails || {}).lengthSeconds) || 0);
+    return sec > 0 ? sec : 0;
+  } catch (e) {
+    Logger.log('動画尺の取得に失敗(InnerTube): ' + e.message);
+    return 0;
+  }
+}
+
+// 予備の経路。拡張サービス「YouTube Data API v3」が有効なときだけ動く
+function dataApiDurationSec_(videoId) {
+  try {
+    if (typeof YouTube === 'undefined') return 0;
+    const res = YouTube.Videos.list('contentDetails', { id: videoId });
     if (!res || !res.items || !res.items.length) return 0;
-    const d = res.items[0].contentDetails.duration;            // ISO8601 例: PT1M23S
-    const p = d.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?/);
+    const p = String(res.items[0].contentDetails.duration).match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?/);
     if (!p) return 0;
     return Math.ceil((Number(p[1] || 0) * 3600) + (Number(p[2] || 0) * 60) + Number(p[3] || 0));
   } catch (e) {
-    Logger.log('動画尺の取得に失敗(URLのみ更新します): ' + e.message);
+    Logger.log('動画尺の取得に失敗(Data API): ' + e.message);
     return 0;
   }
+}
+
+// テスト用: URLを渡すと尺と区分をログに出す
+function testVideoLength(url) {
+  const u = url || 'https://youtube.com/shorts/YstsoLETxuE';
+  Logger.log(`${u}\n  実尺: ${youtubeDurationSec_(u)}秒  区分: ${videoLengthTier_(u) || '(取得できず)'}`);
 }
 
 // テスト用: 制作グループの過去の提出を台帳に反映する(投稿なし)
