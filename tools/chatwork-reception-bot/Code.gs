@@ -335,7 +335,15 @@ function showStatus() {
 
   const name = Utilities.formatDate(new Date(), CONFIG.TZ, 'yyyyMM');
   const sh = SpreadsheetApp.getActive().getSheetByName(name);
-  out.push(`[台帳] ${name}タブ: ` + (sh ? `${Math.max(sh.getLastRow() - 1, 0)}行` : '未作成'));
+  if (!sh) out.push(`[台帳] ${name}タブ: 未作成`);
+  else {
+    // 数式と凡例が入っているぶんを除き、依頼日(B列)が埋まっている行だけ数える
+    const last = sh.getLastRow();
+    const rows = last >= 2 ? sh.getRange(2, 2, last - 1, 1).getValues().filter(r => r[0] !== '').length : 0;
+    let done = 0;
+    if (last >= 2) sh.getRange(2, 12, last - 1, 1).getValues().forEach(r => { if (r[0] === '納品済') done++; });
+    out.push(`[台帳] ${name}タブ: ${rows}本(うち納品済 ${done}本)`);
+  }
   out.push('[動画尺] YouTube Data API: ' + (typeof YouTube === 'undefined' ? '未有効' : '有効'));
 
   Logger.log(out.join('\n'));
