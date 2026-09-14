@@ -7,9 +7,10 @@
  *       CW_TOKEN    : 事務アカウントのChatwork APIトークン
  *  3. 関数 setupSheet を実行(マスタ・テンプレート・今月タブ・集計・_bot を作る/揃える)
  *  4. 関数 installTrigger を実行(CONFIG.POLL_MINUTES おきに poll が動く。既定は5分)
- *  5. 一次返信は初期状態ではOFF(台帳起票と担当者反映だけ動く)。開始するときに startReplies を実行。
+ *  5. 本番投入の直前に resetCursors を実行(古い投稿にさかのぼって反応しないようにする)
+ *  6. 一次返信は初期状態ではOFF(台帳起票と担当者反映だけ動く)。開始するときに startReplies を実行。
  *     止めるときは stopReplies。状態はスクリプトプロパティ BOT_REPLIES(on/off)
- *  6. 提出予定日のリマインドも初期状態ではOFF。開始は startReminders、停止は stopReminders。
+ *  7. 提出予定日のリマインドも初期状態ではOFF。開始は startReminders、停止は stopReminders。
  *     状態はスクリプトプロパティ BOT_REMINDERS(on/off)
  *
  * 動き
@@ -300,6 +301,23 @@ function detect_() {
 
 // 返信のON/OFF(スクリプトプロパティ BOT_REPLIES)。初期値はOFF。
 function repliesEnabled_() { return PropertiesService.getScriptProperties().getProperty('BOT_REPLIES') === 'on'; }
+// 本番投入の直前に実行する。既読位置を「いま」に揃え、未処理の予約を破棄する。
+// これをしないと、前回Botが動いたとき以降の古い依頼に今さら返信してしまう可能性がある。
+function resetCursors() {
+  const props = PropertiesService.getScriptProperties();
+  const now = String(Math.floor(Date.now() / 1000));
+  ['LAST_SEEN', 'LAST_SEEN_PROD', 'LAST_SEEN_SUBMIT', 'LAST_SEEN_DELIVERY'].forEach(k => props.setProperty(k, now));
+  props.deleteProperty('LAST_REMIND_DATE');
+  const bot = botSheet_();
+  const last = bot.getLastRow();
+  let n = 0;
+  if (last >= 2) {
+    const st = bot.getRange(2, 8, last - 1, 1).getValues();
+    st.forEach((r, i) => { if (r[0] === 'pending') { bot.getRange(i + 2, 8).setValue('skipped(reset)'); n++; } });
+  }
+  Logger.log(`既読位置を現在時刻に揃えました。未処理の予約${n}件を破棄しました。\n以降に届く投稿から処理します。`);
+}
+
 function startReplies() { PropertiesService.getScriptProperties().setProperty('BOT_REPLIES', 'on'); Logger.log('一次返信を開始しました(BOT_REPLIES=on)。以後の依頼から返信します'); }
 function stopReplies()  { PropertiesService.getScriptProperties().setProperty('BOT_REPLIES', 'off'); Logger.log('一次返信を停止しました(BOT_REPLIES=off)。台帳への起票と担当者の反映は続きます'); }
 
