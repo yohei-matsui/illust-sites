@@ -146,8 +146,8 @@ function msgShareRevision(senderName, link) {
     `お疲れさまです。${senderName}さんから修正のご依頼が届いています。\n` +
     'ご対応をお願いいたします。\n' +
     `メッセージ: ${link}\n\n` +
-    'この投稿への返信で、担当の方から「先方提出日」をご報告ください(例: 9/27)。\n' +
-    'そのまま依頼者へスケジュールとしてお伝えします。';
+    '依頼者へ提出日をお伝えする場合のみ、この投稿への返信で「報告 9/27」のようにご指示ください。\n' +
+    '通常の修正は、そのままご対応いただいて構いません。';
 }
 function msgShareInquiry(senderName, link) {
   return `[To:${CONFIG.ID_MORIOKA}]森岡さん\n` +
@@ -965,6 +965,9 @@ function applyScheduleReport_(m) {
   const sent = new Date(m.send_time * 1000);
   const dates = findDates_(body, sent);
   if (!dates.length) return false;                 // 日付がなければ割り振り検知に回す
+  // 修正依頼は件数が多く、すべてを客先へ連絡する必要はない。
+  // 「報告」「連絡」などの指示がある返信のときだけ客先へ送る(台帳の更新は指示の有無によらず行う)。
+  const notifyClient = !p.isRevision || /報告|連絡|お伝え|伝えて|共有/.test(body);
   const link = messageLink_(CONFIG.ROOM_PROD, m.message_id);
   if (dates.length > 1) {                          // 複数あると先方提出日を特定できない
     if (repliesEnabled_()) cwPost_(CONFIG.ROOM_PROD, msgScheduleAmbiguous(assignee, link));
@@ -978,6 +981,11 @@ function applyScheduleReport_(m) {
     if (t.sheet.getRange(t.row, 8).getValue() === '') t.sheet.getRange(t.row, 8).setValue(assignee);
     if (t.sheet.getRange(t.row, 3).getValue() === '') t.sheet.getRange(t.row, 3).setValue(ymd_(due)).setNumberFormat('yyyy/mm/dd');
   });
+
+  if (!notifyClient) {
+    Logger.log(`期日報告: ${p.caseName} 先方提出${md_(due)} を台帳に反映(指示がないため客先へは連絡しません)`);
+    return true;
+  }
 
   // 依頼者への初稿スケジュール連絡を予約
   const requested = new Date(hit[2]);
