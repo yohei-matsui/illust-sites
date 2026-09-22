@@ -1266,6 +1266,51 @@ function setupSummary_() {
   sm.setColumnWidths(1, 6, 100);
 }
 
+// ===== 手作業での記帳 =====
+// Botが起票しなかった案件(修正依頼や、既読位置を過ぎた依頼)を台帳に追加する。
+// Chatworkへの投稿は一切しない。
+//   例: addCaseRows({ requested:'2026/09/22', sender:'がじゅ', caseName:'坂本桃太郎さん',
+//                     count:6, due:'2026/09/27', assignee:'牛嶋',
+//                     link:'https://www.chatwork.com/#!rid367205288-2154030563747823616',
+//                     note:'差し替え6本' })
+function addCaseRows(opts) {
+  if (!opts || !opts.requested || !opts.caseName || !opts.count) {
+    throw new Error('requested(依頼日) / caseName(案件名) / count(本数) は必須です');
+  }
+  const requested = parseJst_(String(opts.requested).replace(/-/g, '/') + ' 00:00:00');
+  const sh = monthSheet_(requested);
+  const n = Number(opts.count);
+  const colB = sh.getRange(2, 2, sh.getMaxRows() - 1, 1).getValues();
+  let row = 2;
+  while (row - 2 < colB.length && colB[row - 2][0] !== '') row++;
+  if (row + n > sh.getMaxRows()) sh.insertRowsAfter(sh.getMaxRows(), n + 20);
+
+  const dueYmd = opts.due ? String(opts.due).replace(/-/g, '/') : '';
+  for (let i = 0; i < n; i++) {
+    sh.getRange(row + i, 2, 1, 4).setValues([[ymd_(requested), dueYmd, opts.sender || '', opts.caseName]]); // B..E
+    if (opts.assignee) sh.getRange(row + i, 8).setValue(opts.assignee);                                     // H 担当者
+  }
+  if (opts.link) sh.getRange(row, 10).setValue(opts.link);   // J 依頼メッセージ(先頭行のみ)
+  if (opts.note) sh.getRange(row, 11).setValue(opts.note);   // K 備考(先頭行のみ)
+  sh.getRange(row, 2, n, 2).setNumberFormat('yyyy/mm/dd');
+  Logger.log(`${Utilities.formatDate(requested, CONFIG.TZ, 'yyyyMM')}タブに ${opts.caseName} を ${n}本 追加しました(No.${row - 1}〜${row - 1 + n - 1})`);
+  return row - 1;
+}
+
+// 一度だけ実行する用: 9/22の坂本桃太郎さん 差し替え6本。実行後はこの関数を消して構いません。
+function addSakamoto0922() {
+  addCaseRows({
+    requested: '2026/09/22',
+    sender: 'がじゅ',
+    caseName: '坂本桃太郎さん',
+    count: 6,
+    due: '2026/09/27',
+    assignee: '牛嶋',
+    link: 'https://www.chatwork.com/#!rid367205288-2154030563747823616',
+    note: '差し替え6本 / フック・一部変更パターン',
+  });
+}
+
 // ===== テスト用: 今月の過去依頼をChatworkに投稿せずシートに流し込む =====
 function backfillThisMonth() {
   const month = Utilities.formatDate(new Date(), CONFIG.TZ, 'yyyyMM');
