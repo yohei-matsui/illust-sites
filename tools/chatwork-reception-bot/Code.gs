@@ -145,7 +145,9 @@ function msgShareRevision(senderName, link) {
   return `[To:${CONFIG.ID_MORIOKA}]森岡さん\n` +
     `お疲れさまです。${senderName}さんから修正のご依頼が届いています。\n` +
     'ご対応をお願いいたします。\n' +
-    `メッセージ: ${link}`;
+    `メッセージ: ${link}\n\n` +
+    'この投稿への返信で、担当の方から「先方提出日」をご報告ください(例: 9/27)。\n' +
+    'そのまま依頼者へスケジュールとしてお伝えします。';
 }
 function msgShareInquiry(senderName, link) {
   return `[To:${CONFIG.ID_MORIOKA}]森岡さん\n` +
@@ -192,8 +194,13 @@ function field_(body, label) {
   const m = body.match(new RegExp('□\\s*' + label + '[^\\n]*\\n([\\s\\S]*?)(?=\\n\\s*□|$)'));
   return m ? m[1].replace(/\s+/g, ' ').trim() : '';
 }
+// 依頼テンプレかどうか。「製作本数」など表記ゆれがあり、案件名の欄がないこともある。
+// □見出しが2つ以上あり、本数・台本・素材・フォーマットのいずれかが含まれていれば依頼とみなす。
 function isRequest_(body) {
-  return /□\s*案件名/.test(body) || /□\s*制作本数/.test(body);
+  if (/□\s*案件名/.test(body)) return true;
+  if (/□\s*[制製]作本数/.test(body)) return true;
+  const heads = (body.match(/□\s*[^\n]{1,20}/g) || []).length;
+  return heads >= 2 && /□\s*([制製]作)?(本数|フォーマット|台本|素材)/.test(body);
 }
 function isToSelf_(body) {
   return body.indexOf('[To:' + CONFIG.ID_SELF + ']') >= 0 || body.indexOf('[rp aid=' + CONFIG.ID_SELF) >= 0;
@@ -204,18 +211,79 @@ function classify_(msg) {
   if (!isToSelf_(body)) return null;               // 事務へのメンションがなければ無反応
   if (/修正|直し|変更|差し替え|カット|削除/.test(body)) return 'revision';
   if (/納期|担当|いつ|進捗|状況/.test(body)) return 'inquiry';
+  if (isAcknowledgement_(body)) return null;       // 「承知しました」などの相槌は無反応
   return 'mention';                                // その他の事務宛メンション → 汎用返信+森岡さんへ共有
 }
+
+// 相槌だけの短い返信か(宛名・タグを除いた本文で判断)。
+// 「承知しました！よろしくお願いします。」のように相槌が連なる場合も拾う。
+const ACK_PHRASES = [
+  '承知いたしました', '承知しました', 'かしこまりました', '了解いたしました', '了解しました', '了解です',
+  'ありがとうございました', 'ありがとうございます', 'ありがとうござます', 'ありがとうございす',
+  'よろしくお願いいたします', 'よろしくお願いします', 'よろしくお願い致します', 'お願いいたします', 'お願いします',
+  '確認いたします', '確認します', '拝見します', '大丈夫です', '助かります', 'はい', 'OK', 'ok',
+];
+function isAcknowledgement_(body) {
+  let text = body.replace(/\[[^\]]*\]/g, ' ')          // Chatworkのタグを除く
+    .split('\n').map(x => x.trim())
+    .filter(x => x && !/(さん|様)$/.test(x))            // 宛名の行を除く
+    .join(' ').trim();
+  if (!text) return true;
+  if (text.length > 40) return false;
+  text = text.replace(/\([A-Za-z^;:'`\-\s]{1,12}\)/g, ' ');   // (bow) (sweat) などの顔文字
+  ACK_PHRASES.forEach(w => { text = text.split(w).join(''); });
+  // 残りが記号・絵文字・空白だけなら相槌とみなす
+  return !/[0-9A-Za-z぀-ヿ一-鿿]/.test(text);
+}
+
 function parseRequest_(msg) {
-  const body = stripQuotes_(msg.body);
+  const r = parseRequestBody_(stripQuotes_(msg.body));
+  r.senderId = String(msg.account.account_id);
+  r.senderName = cleanName_(msg.account.name);
+  return r;
+}
+function parseRequestBody_(body) {
   return {
     caseName: field_(body, '案件名') || '',
-    count: field_(body, '制作本数') || '',
+    count: field_(body, '[制製]作本数') || field_(body, '本数') || '',
     format: field_(body, '制作フォーマット') || '',
     due: field_(body, 'ご希望納期') || '',
-    senderId: String(msg.account.account_id),
-    senderName: cleanName_(msg.account.name),
   };
+}
+
+// 修正依頼に案件名がないことが多いため、手がかりから補う。
+//  1) □案件名 / □制作本数 が書かれていればそれを使う
+//  2) 本文に元の依頼メッセージのリンクがあれば、その依頼の案件名を引き継ぐ
+//  3) それでも決まらなければ、台帳の案件名が本文に出てくるか照合する
+function enrichRevision_(payload, body, bot) {
+  const p = parseRequestBody_(body);
+  if (p.caseName) payload.caseName = p.caseName;
+  if (p.count) payload.count = p.count;
+  if (payload.caseName) return;
+
+  const link = body.match(/rid\d+-(\d+)/);
+  if (link) {
+    const last = bot.getLastRow();
+    if (last >= 2) {
+      bot.getRange(2, 1, last - 1, 7).getValues().forEach(r => {
+        if (payload.caseName || String(r[0]) !== link[1]) return;
+        try {
+          const prev = JSON.parse(r[6] || '{}');
+          if (prev.caseName) payload.caseName = prev.caseName;
+          if (!payload.count && prev.count) payload.count = prev.count;
+        } catch (e) {}
+      });
+    }
+  }
+  if (payload.caseName) return;
+
+  try {
+    const rows = findCaseRowsByText_(body, true);
+    if (rows.length) {
+      const v = rows[0].sheet.getRange(rows[0].row, 5).getValue();
+      if (v) payload.caseName = String(v);
+    }
+  } catch (e) { Logger.log('案件名の照合に失敗: ' + e.message); }
 }
 
 // ===== 返信時刻 =====
@@ -292,7 +360,13 @@ function detect_() {
     if (known.has(String(m.message_id))) return;
     const kind = classify_(m);
     if (!kind) return;
-    const payload = kind === 'request' ? parseRequest_(m) : { senderId: String(m.account.account_id), senderName: cleanName_(m.account.name) };
+    let payload;
+    if (kind === 'request') {
+      payload = parseRequest_(m);
+    } else {
+      payload = { senderId: String(m.account.account_id), senderName: cleanName_(m.account.name) };
+      if (kind === 'revision') enrichRevision_(payload, stripQuotes_(m.body), bot);
+    }
     const at = kind === 'inquiry' ? new Date() : replyAt_(m.send_time); // 依頼者へ返信するものは10〜15分後
     bot.appendRow([String(m.message_id), kind, new Date(m.send_time * 1000), at, payload.senderId, payload.senderName, JSON.stringify(payload), 'pending']);
   });
@@ -397,7 +471,12 @@ function dispatch_() {
         bot.getRange(i + 2, 7).setValue(JSON.stringify(payload));
       } else if (kind === 'revision') {
         cwPost_(CONFIG.ROOM_CLIENT, msgRevisionReply(payload.senderId, payload.senderName));
-        cwPost_(CONFIG.ROOM_PROD, msgShareRevision(payload.senderName, link));
+        const shared = cwPost_(CONFIG.ROOM_PROD, msgShareRevision(payload.senderName, link));
+        // 新規依頼と同じく、この共有メッセージへの返信で先方提出日を報告できるようにする
+        payload.shareMessageId = String(shared.message_id);
+        payload.sheetName = Utilities.formatDate(new Date(r[2]), CONFIG.TZ, 'yyyyMM');
+        payload.isRevision = true;
+        bot.getRange(i + 2, 7).setValue(JSON.stringify(payload));
       } else if (kind === 'inquiry') {
         cwPost_(CONFIG.ROOM_PROD, msgShareInquiry(payload.senderName, link));
       } else if (kind === 'mention') {
@@ -553,8 +632,10 @@ function findRowForSubmission_(sub, when) {
       const vname = String(v[4] || '');
       // 1) 動画名が提出のタイトルと一致(修正稿はここで同じ行に戻る)
       if (titleKey && normCase_(vname) === titleKey) return { sheet: sh, row: i + 2, sheetName: name };
-      // 2) 仮の動画名(動画1など)でURL未入力の行を、初稿の割り当て先として控えておく
-      if (!placeholder && v[7] === '' && /^動画\d*$/.test(vname)) placeholder = { sheet: sh, row: i + 2, sheetName: name };
+      // 2) 動画名が未設定(空欄または「動画1」などの仮の値)でURL未入力の行を、割り当て先として控えておく
+      if (!placeholder && v[7] === '' && (vname === '' || /^動画\d*$/.test(vname))) {
+        placeholder = { sheet: sh, row: i + 2, sheetName: name };
+      }
     }
   }
   return placeholder;
