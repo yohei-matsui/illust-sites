@@ -209,10 +209,20 @@ function classify_(msg) {
   const body = stripQuotes_(msg.body);
   if (isRequest_(body)) return 'request';          // 依頼テンプレ(メンションの有無を問わず)
   if (!isToSelf_(body)) return null;               // 事務へのメンションがなければ無反応
+  if (isAcknowledgement_(body)) return null;       // 「承知しました」などの相槌は無反応
+  if (isAcceptance_(body)) return null;            // 「納期問題ありません」などの承諾も無反応
   if (/修正|直し|変更|差し替え|カット|削除/.test(body)) return 'revision';
   if (/納期|担当|いつ|進捗|状況/.test(body)) return 'inquiry';
-  if (isAcknowledgement_(body)) return null;       // 「承知しました」などの相槌は無反応
   return 'mention';                                // その他の事務宛メンション → 汎用返信+森岡さんへ共有
+}
+
+// スケジュールや内容への承諾か。
+// 「納期問題ありませんので、よろしくお願いいたします」のように、納期の語を含むが
+// 質問ではなく了承を伝えているだけの返信を、問い合わせと取り違えないようにする。
+function isAcceptance_(body) {
+  const text = body.replace(/\[[^\]]*\]/g, ' ');
+  if (/[？?]|でしょうか|ですか|ますか|いかがで|教えて|ご教示|お聞き|伺/.test(text)) return false; // 質問なら対象外
+  return /問題(ありません|ございません|ないです|なし)|大丈夫です|それで(お願い|結構|大丈夫)|で(お願いします|結構です)|承知(いた)?しました/.test(text);
 }
 
 // 相槌だけの短い返信か(宛名・タグを除いた本文で判断)。
