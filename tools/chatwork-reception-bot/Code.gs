@@ -138,7 +138,7 @@ function msgShareRequest(req, link, rowNo) {
     `依頼者: ${req.senderName}さん\n` +
     `依頼メッセージ: ${link}\n` +
     `案件シート: ${Utilities.formatDate(new Date(), CONFIG.TZ, 'yyyyMM')}タブ No.${rowNo}〜\n\n` +
-    'この投稿への返信で、担当の方から「先方提出日」をご報告ください(例: 9/14)。\n' +
+    'この投稿への返信で、担当者と「先方提出日」をご報告ください(例: 牛嶋 9/30)。\n' +
     'そのまま依頼者へ初稿スケジュールとしてお伝えします。';
 }
 function msgShareRevision(senderName, link) {
@@ -146,7 +146,7 @@ function msgShareRevision(senderName, link) {
     `お疲れさまです。${senderName}さんから修正のご依頼が届いています。\n` +
     'ご対応をお願いいたします。\n' +
     `メッセージ: ${link}\n\n` +
-    '依頼者へ提出日をお伝えする場合のみ、この投稿への返信で「報告 9/27」のようにご指示ください。\n' +
+    '依頼者へ提出日をお伝えする場合のみ、この投稿への返信で「報告 牛嶋 9/27」のようにご指示ください。\n' +
     '通常の修正は、そのままご対応いただいて構いません。';
 }
 function msgShareInquiry(senderName, link) {
@@ -433,6 +433,19 @@ function showStatus() {
   Logger.log(out.join('\n'));
 }
 
+// 「先方提出日」列を追加したときに一度だけ実行する。
+// マスタには触らず、テンプレートと既存の月別タブに新しい列・数式・色分けを反映し、
+// 過去の社内提出と客先納品を読み直して、先方提出日を埋める。
+function migrateDeliveryColumn() {
+  const ss = SpreadsheetApp.getActive();
+  const tabs = ss.getSheets().filter(sh => /^\d{6}$/.test(sh.getName()) || sh.getName() === CONFIG.SHEET_TEMPLATE);
+  tabs.forEach(sh => applyLayout_(sh, true));
+  setupSummary_();
+  backfillSubmissions();
+  backfillDeliveries();
+  Logger.log(`${tabs.length}タブに先方提出日の列を反映しました。社内提出のみの行は「確認待ち」、客先へ納品済みの行は「納品済」になります。`);
+}
+
 // 本番投入の直前に実行する。既読位置を「いま」に揃え、未処理の予約を破棄する。
 // これをしないと、前回Botが動いたとき以降の古い依頼に今さら返信してしまう可能性がある。
 function resetCursors() {
@@ -579,7 +592,7 @@ function detectSubmissions_() {
 function applySubmission_(m) {
   const sub = parseSubmission_(stripQuotes_(m.body));
   if (!sub) return false;
-  const t = findRowForSubmission_(sub, new Date(m.send_time * 1000));
+  const t = findRowForSubmission_({ caseName: sub.caseName, title: sub.title, url: sub.url }, new Date(m.send_time * 1000));
   if (!t) { Logger.log(`提出検知: 台帳に該当行なし(${sub.caseName} / ${sub.title})`); return false; }
 
   t.sheet.getRange(t.row, 9).setValue(sub.url);              // I: YouTube URL を常に最新へ
@@ -623,12 +636,30 @@ function parseSubmission_(body) {
 }
 
 // 提出に対応する台帳の行を探す。見つからなければ、その案件の未提出行に割り当てる
+function videoId_(url) {
+  const m = String(url || '').match(/(?:shorts\/|youtu\.be\/|v=)([A-Za-z0-9_-]{6,})/);
+  return m ? m[1] : '';
+}
 function findRowForSubmission_(sub, when) {
   const ss = SpreadsheetApp.getActive();
   const cur = Utilities.formatDate(when, CONFIG.TZ, 'yyyyMM');
   const key = normCase_(sub.caseName);
   const titleKey = normCase_(sub.title);
   const sheets = [cur, prevMonthName_(cur)].map(n => ({ name: n, sh: ss.getSheetByName(n) })).filter(x => x.sh);
+
+  // 0) 同じ動画URLがすでに入っている行があれば、案件名や動画名が変わっていてもその行とみなす
+  //    (社内提出のあと、先方提出時に動画名を付け替えるケースに対応)
+  const vid = videoId_(sub.url);
+  if (vid) {
+    for (const { name, sh } of sheets) {
+      const lastRow = sh.getLastRow();
+      if (lastRow < 2) continue;
+      const urls = sh.getRange(2, 9, lastRow - 1, 1).getValues();
+      for (let i = 0; i < urls.length; i++) {
+        if (urls[i][0] && videoId_(String(urls[i][0])) === vid) return { sheet: sh, row: i + 2, sheetName: name, byUrl: true };
+      }
+    }
+  }
 
   let placeholder = null;
   for (const { name, sh } of sheets) {
@@ -639,6 +670,9 @@ function findRowForSubmission_(sub, when) {
       const v = vals[i];
       if (v[0] === '') continue;
       if (normCase_(v[3]) !== key) continue;                      // E 案件名が一致するか
+      // 依頼日より前の提出・納品は別の(過去の)依頼のものなので割り当てない
+      const req = v[0] instanceof Date ? ymd_(v[0]) : String(v[0]).replace(/-/g, '/');
+      if (req > ymd_(when)) continue;
       const vname = String(v[4] || '');
       // 1) 動画名が提出のタイトルと一致(修正稿はここで同じ行に戻る)
       if (titleKey && normCase_(vname) === titleKey) return { sheet: sh, row: i + 2, sheetName: name };
@@ -804,18 +838,47 @@ function applyDelivery_(m) {
   const d = parseDelivery_(stripQuotes_(m.body));
   if (!d) return false;
   const when = new Date(m.send_time * 1000);
+  const used = {};
   let n = 0;
   d.items.forEach(item => {
-    const t = findRowForSubmission_({ caseName: d.caseName, title: item.title }, when);
+    let t = findRowForSubmission_({ caseName: d.caseName, title: item.title, url: item.url }, when);
+    if (t && used[t.sheetName + ':' + t.row]) t = null;
+    // 見つからなければ、同じ案件で先方未提出の行に上から順に割り当てる
+    if (!t) t = findUndeliveredRow_(d.caseName, when, used);
     if (!t) { Logger.log(`納品検知: 該当行なし(${d.caseName} / ${item.title || '(タイトルなし)'})`); return; }
+    used[t.sheetName + ':' + t.row] = true;
     t.sheet.getRange(t.row, 9).setValue(item.url);
     if (item.title && t.sheet.getRange(t.row, 6).getValue() !== item.title) t.sheet.getRange(t.row, 6).setValue(item.title);
+    if (t.sheet.getRange(t.row, 13).getValue() === '') {
+      t.sheet.getRange(t.row, 13).setValue(ymd_(when)).setNumberFormat('yyyy/mm/dd');   // M: 先方提出日
+    }
     const len = videoLengthTier_(item.url);
     if (len) t.sheet.getRange(t.row, 7).setValue(len);
     n++;
   });
-  if (n) Logger.log(`納品検知: ${d.kind} ${d.caseName} ${n}本を更新`);
+  if (n) Logger.log(`納品検知: ${d.kind} ${d.caseName} ${n}本を更新(先方提出日を記録)`);
   return n > 0;
+}
+
+// 案件名が一致し、先方提出日が空の行を上から探す
+function findUndeliveredRow_(caseName, when, used) {
+  const ss = SpreadsheetApp.getActive();
+  const cur = Utilities.formatDate(when, CONFIG.TZ, 'yyyyMM');
+  const key = normCase_(caseName);
+  for (const name of [prevMonthName_(cur), cur]) {
+    const sh = ss.getSheetByName(name);
+    if (!sh || sh.getLastRow() < 2) continue;
+    const vals = sh.getRange(2, 2, sh.getLastRow() - 1, 12).getValues();   // B..M
+    for (let i = 0; i < vals.length; i++) {
+      const v = vals[i];
+      if (v[0] === '' || normCase_(v[3]) !== key || v[11] !== '' || v[1] === '中止') continue;
+      if (used[name + ':' + (i + 2)]) continue;
+      const req = v[0] instanceof Date ? ymd_(v[0]) : String(v[0]).replace(/-/g, '/');
+      if (req > ymd_(when)) continue;                                        // 依頼より前の納品は割り当てない
+      return { sheet: sh, row: i + 2, sheetName: name };
+    }
+  }
+  return null;
 }
 
 // Chatworkの装飾タグを外す(改行は残す)
@@ -909,10 +972,11 @@ function buildReminders_(now) {
   [cur, prevMonthName_(cur)].map(n => ss.getSheetByName(n)).filter(Boolean).forEach(sh => {
     const lastRow = sh.getLastRow();
     if (lastRow < 2) return;
-    const vals = sh.getRange(2, 2, lastRow - 1, 8).getValues();  // B..I
+    const vals = sh.getRange(2, 2, lastRow - 1, 12).getValues();  // B..M
     vals.forEach(v => {
       const [reqDate, due, , caseName, , , assignee, url] = v;   // B,C,D,E,F,G,H,I
-      if (reqDate === '' || url !== '' || assignee === '') return;
+      const delivered = v[11];                                   // M 先方提出日
+      if (reqDate === '' || delivered !== '' || assignee === '') return;
       if (!(due instanceof Date)) return;                        // 「中止」や空欄は対象外
       const d = ymd_(due);
       const when = d === today ? 'today' : (d === tomorrow ? 'tomorrow' : null);
@@ -920,7 +984,7 @@ function buildReminders_(now) {
       const id = nameToId[assignee];
       if (!id) return;                                           // マスタ外の担当者名は対象外
       if (!byId[id]) byId[id] = { today: {}, tomorrow: {} };
-      const key = caseName || '(案件名未記載)';
+      const key = (caseName || '(案件名未記載)') + (url !== '' ? '(社内提出済・先方未提出)' : '');
       byId[id][when][key] = (byId[id][when][key] || 0) + 1;
     });
   });
@@ -935,7 +999,7 @@ function buildReminders_(now) {
     if (!lines.length) return;
     out[id] = `[To:${id}]${CONFIG.ASSIGNEES[id]}さん\nお疲れさまです。\n` +
       lines.join('\n\n') + '\n\n' +
-      `提出済みでしたら、この投稿は読み飛ばしてください${bow_()}`;
+      `先方へ提出済みでしたら、この投稿は読み飛ばしてください${bow_()}`;
   });
   return out;
 }
@@ -952,10 +1016,10 @@ function previewReminders() {
 // Botの共有メッセージへの返信に日付が1つあれば、それを「先方提出日」として扱う。
 // 返信した人が担当者になり、台帳に担当者と提出予定日を入れたうえで、依頼者へ初稿スケジュールを送る。
 // 日付が複数あるときは判断せず、森岡さんにメンションして人に任せる。
-function applyScheduleReport_(m) {
+function applyScheduleReport_(m, prodMsgs) {
   const reporterId = String(m.account.account_id);
-  const assignee = CONFIG.ASSIGNEES[reporterId];
-  if (!assignee) return false;                     // 社内の担当者以外は対象外
+  const reporter = CONFIG.ASSIGNEES[reporterId];
+  if (!reporter) return false;                     // 社内メンバー以外は対象外
   const body = stripQuotes_(m.body);
   const rp = body.match(/\[rp aid=\d+ to=\d+-(\d+)\]/);
   if (!rp) return false;                           // 共有メッセージへの返信でなければ対象外
@@ -980,10 +1044,13 @@ function applyScheduleReport_(m) {
   const notifyClient = !p.isRevision || /報告|連絡|お伝え|伝えて|共有/.test(body);
   const link = messageLink_(CONFIG.ROOM_PROD, m.message_id);
   if (dates.length > 1) {                          // 複数あると先方提出日を特定できない
-    if (repliesEnabled_()) cwPost_(CONFIG.ROOM_PROD, msgScheduleAmbiguous(assignee, link));
+    if (repliesEnabled_()) cwPost_(CONFIG.ROOM_PROD, msgScheduleAmbiguous(reporter, link));
     Logger.log('期日報告: 日付が複数のため森岡さんへ引き継ぎ');
     return true;
   }
+
+  // 担当者は報告した人とは限らない(森岡さんが牛嶋さんの分を報告することが多い)
+  const assignee = resolveAssignee_(body, m, hit, p, prodMsgs) || reporter;
 
   // 台帳に担当者と先方提出予定日を反映
   const due = dates[0];
@@ -1008,6 +1075,47 @@ function applyScheduleReport_(m) {
   rows.forEach((r, i) => { if (r[0] === hit[0]) bot.getRange(i + 2, 7).setValue(JSON.stringify(p)); });
   Logger.log(`期日報告: ${p.caseName} 担当${assignee} 先方提出${md_(due)}`);
   return true;
+}
+
+// 期日報告の担当者を決める。
+//  1) 返信の中に担当者の名前やToがあればそれ(例:「牛嶋 9/30」)
+//  2) 共有メッセージのあと、森岡さん・松井さんが担当者宛に送った最新のToメッセージ
+//     (案件名を含むものを優先)
+//  3) どちらもなければ null(呼び出し側で報告者にする)
+function resolveAssignee_(body, m, hit, p, prodMsgs) {
+  const selfId = CONFIG.ID_SELF;
+  const text = body.replace(/\[rp[^\]]*\][^\n]*\n?/, '');          // 返信先の宛名行を除く
+  for (const t of (text.match(/\[To:(\d+)\]/g) || [])) {
+    const id = t.match(/\d+/)[0];
+    if (id !== selfId && CONFIG.ASSIGNEES[id]) return CONFIG.ASSIGNEES[id];
+  }
+  const plain = text.replace(/\[[^\]]*\]/g, ' ');
+  for (const id of Object.keys(CONFIG.ASSIGNEES)) {
+    if (plain.indexOf(CONFIG.ASSIGNEES[id]) >= 0) return CONFIG.ASSIGNEES[id];
+  }
+
+  // 共有メッセージ以降の割り振りを探す
+  const from = Math.floor(new Date(hit[3] || hit[2]).getTime() / 1000) - 60;
+  const to = m.send_time;
+  let msgs = prodMsgs;
+  if (!msgs) { try { msgs = cwGet_(`/rooms/${CONFIG.ROOM_PROD}/messages?force=1`); } catch (e) { msgs = []; } }
+  const key = normCase_(p.caseName || '');
+  let best = null, bestHasCase = false;
+  msgs.forEach(x => {
+    if (x.send_time < from || x.send_time > to) return;
+    const sender = String(x.account.account_id);
+    if (!CONFIG.ASSIGNERS.includes(sender)) return;
+    const b = stripQuotes_(x.body);
+    const ids = (b.match(/\[To:(\d+)\]/g) || []).map(t => t.match(/\d+/)[0])
+      .filter(id => id !== selfId && id !== sender && CONFIG.ASSIGNEES[id] && id !== '7433976'); // 松井さんへのccは除く
+    if (!ids.length) return;
+    const hasCase = key.length >= 2 && normCase_(b).indexOf(key) >= 0;
+    if (!best || (hasCase && !bestHasCase) || (hasCase === bestHasCase && x.send_time > best.t)) {
+      best = { id: ids[0], t: x.send_time };
+      bestHasCase = hasCase;
+    }
+  });
+  return best ? CONFIG.ASSIGNEES[best.id] : null;
 }
 
 // 本文から日付(M/D・M月D日)を拾う。過去の日付は翌年として扱う
@@ -1046,7 +1154,7 @@ function detectAssignments_() {
     maxT = Math.max(maxT, m.send_time);
     try {
       // 共有メッセージへの返信で先方提出日が報告されていれば、それを優先して処理する
-      if (!applyScheduleReport_(m)) applyAssignment_(m);
+      if (!applyScheduleReport_(m, msgs)) applyAssignment_(m);
     } catch (e) { Logger.log('assignment error: ' + e.message); }
   });
   props.setProperty('LAST_SEEN_PROD', String(maxT));
@@ -1160,9 +1268,9 @@ function installTrigger() {
 // ===== シート構築 =====
 // 列: A No. | B 依頼日 | C 提出予定日 | D 依頼者 | E 案件名 | F 動画名 | G 動画尺 | H 担当者 | I YouTube URL | J 依頼メッセージ | K 備考 | L ステータス
 const LAYOUT = {
-  headers: ['No.', '依頼日', '提出予定日', '依頼者', '案件名', '動画名（シナリオNo.など）', '動画尺', '担当者', 'YouTube URL', '依頼メッセージ', '備考', 'ステータス'],
-  widths: [45, 90, 90, 90, 220, 260, 70, 70, 280, 300, 200, 90],
-  fills: ['#D9D9D9', '#DDEBF7', '#E2EFDA', '#DDEBF7', '#DDEBF7', '#E2EFDA', '#E2EFDA', '#FCE4D6', '#E2EFDA', '#DDEBF7', '#E2EFDA', '#D9D9D9'],
+  headers: ['No.', '依頼日', '提出予定日', '依頼者', '案件名', '動画名（シナリオNo.など）', '動画尺', '担当者', 'YouTube URL', '依頼メッセージ', '備考', 'ステータス', '先方提出日'],
+  widths: [45, 90, 90, 90, 220, 260, 70, 70, 280, 300, 200, 90, 90],
+  fills: ['#D9D9D9', '#DDEBF7', '#E2EFDA', '#DDEBF7', '#DDEBF7', '#E2EFDA', '#E2EFDA', '#FCE4D6', '#E2EFDA', '#DDEBF7', '#E2EFDA', '#D9D9D9', '#D9D9D9'],
   rows: 300,
 };
 
@@ -1213,12 +1321,13 @@ function applyLayout_(sh, keepData) {
   headers.forEach((_, i) => { sh.setColumnWidth(i + 1, widths[i]); sh.getRange(1, i + 1).setBackground(fills[i]); });
   sh.getRange(1, 3).setNote('担当者が初稿の提出予定日を入れます。中止の場合は「中止」と入力。');
   sh.getRange(1, 11).setNote('Botは依頼文の希望納期とフォーマットをここに入れます。');
-  sh.getRange(1, 12).setNote('自動判定: YouTube URLあり→納品済 / 担当者あり→制作中 / それ以外→未割り振り。提出予定日に「中止」で中止。');
+  sh.getRange(1, 12).setNote('自動判定: 先方提出日あり→納品済 / URLあり(社内提出済)→確認待ち / 担当者あり→制作中 / それ以外→未割り振り。提出予定日に「中止」で中止。');
+  sh.getRange(1, 13).setNote('TendAiルームへ納品した日。Botが「初稿/修正稿ご確認のお願い」を検知して自動で入れます。');
 
   const fNo = [], fSt = [];
   for (let r = 2; r <= ROWS + 1; r++) {
     fNo.push([`=IF(B${r}="","",ROW()-1)`]);
-    fSt.push([`=IF(B${r}="","",IF(C${r}="中止","中止",IF(I${r}<>"","納品済",IF(H${r}<>"","制作中","未割り振り"))))`]);
+    fSt.push([`=IF(B${r}="","",IF(C${r}="中止","中止",IF(M${r}<>"","納品済",IF(I${r}<>"","確認待ち",IF(H${r}<>"","制作中","未割り振り")))))`]);
   }
   sh.getRange(2, 1, ROWS, 1).setFormulas(fNo).setBackground('#F3F3F3');
   sh.getRange(2, 12, ROWS, 1).setFormulas(fSt).setBackground('#F3F3F3');
@@ -1232,10 +1341,11 @@ function applyLayout_(sh, keepData) {
   const body = sh.getRange(2, 1, ROWS, NC);
   sh.setConditionalFormatRules([
     // 提出予定日を過ぎてURL未入力 → 行を薄赤
-    SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied(`=AND($B2<>"",$I2="",ISNUMBER($C2),$C2<TODAY())`).setBackground('#F8CBAD').setRanges([body]).build(),
+    SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied(`=AND($B2<>"",$M2="",ISNUMBER($C2),$C2<TODAY())`).setBackground('#F8CBAD').setRanges([body]).build(),
     // 担当者が空 → 担当者セルを黄色
     SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied(`=AND($B2<>"",$H2="")`).setBackground('#FFF2CC').setRanges([sh.getRange(2, 8, ROWS, 1)]).build(),
     SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo('納品済').setBackground('#C6E0B4').setRanges([sh.getRange(2, 12, ROWS, 1)]).build(),
+    SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo('確認待ち').setBackground('#FFE699').setRanges([sh.getRange(2, 12, ROWS, 1)]).build(),
     SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo('中止').setBackground('#D9D9D9').setFontColor('#808080').setRanges([sh.getRange(2, 12, ROWS, 1)]).build(),
   ]);
   sh.setFrozenRows(1); sh.setFrozenColumns(5);
@@ -1252,7 +1362,7 @@ function setupSummary_() {
   const ss = SpreadsheetApp.getActive();
   let sm = ss.getSheetByName(CONFIG.SHEET_SUMMARY) || ss.insertSheet(CONFIG.SHEET_SUMMARY);
   sm.clear();
-  sm.getRange('A1:F1').setValues([['月(タブ名)', '本数', '未割り振り', '制作中', '納品済', '中止']]).setFontWeight('bold').setBackground('#EFEFEF');
+  sm.getRange('A1:G1').setValues([['月(タブ名)', '本数', '未割り振り', '制作中', '確認待ち', '納品済', '中止']]).setFontWeight('bold').setBackground('#EFEFEF');
   const rows = [];
   for (let i = 0; i < 24; i++) {
     const r = i + 2;
@@ -1261,10 +1371,10 @@ function setupSummary_() {
     const cnt = (v) => `=IF(A${r}="","",IF(${exists},COUNTIF(${rng('L')},"${v}"),""))`;
     rows.push([
       `=IF(A${r}="","",IF(${exists},COUNTA(${rng('B')}),"タブなし"))`,
-      cnt('未割り振り'), cnt('制作中'), cnt('納品済'), cnt('中止'),
+      cnt('未割り振り'), cnt('制作中'), cnt('確認待ち'), cnt('納品済'), cnt('中止'),
     ]);
   }
-  sm.getRange(2, 2, rows.length, 5).setFormulas(rows);
+  sm.getRange(2, 2, rows.length, 6).setFormulas(rows);
   const names = [];
   const now = new Date();
   for (let i = 0; i < 24; i++) {
@@ -1272,8 +1382,8 @@ function setupSummary_() {
     names.push([Utilities.formatDate(d, CONFIG.TZ, 'yyyyMM')]);
   }
   sm.getRange(2, 1, names.length, 1).setNumberFormat('@').setValues(names).setFontColor('#0000FF');
-  sm.getRange('H1').setValue('A列のタブ名は編集可(青字)。存在しない月は「タブなし」と表示されます。').setFontColor('#808080');
-  sm.setColumnWidths(1, 6, 100);
+  sm.getRange('I1').setValue('A列のタブ名は編集可(青字)。存在しない月は「タブなし」と表示されます。').setFontColor('#808080');
+  sm.setColumnWidths(1, 7, 100);
 }
 
 // ===== 手作業での記帳 =====
